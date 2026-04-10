@@ -1,0 +1,3 @@
+discord.py==2.4.0
+audioop-lts
+motor==3.4.0
