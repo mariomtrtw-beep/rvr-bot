@@ -3,6 +3,7 @@ from discord.ext import commands
 import json
 import os
 import re
+import asyncio
 from datetime import datetime
 
 # ── Config ──────────────────────────────────────────────────────────────────
@@ -140,13 +141,13 @@ async def on_reaction_add(reaction, user):
         if existing:
             old_seconds = time_to_seconds(existing[0]["time"])
             new_seconds = time_to_seconds(sub["time"])
-            if new_seconds < old_seconds:
-                data["times"][track] = [e for e in data["times"][track] if e["uid"] != sub["uid"]]
-            else:
-                # New time is worse, reject silently
+            if new_seconds >= old_seconds:
                 await reaction.message.edit(content="⚠️ Rejected — player already has a better time on this track.")
                 await reaction.message.clear_reactions()
+                pending[reaction.message.id] = sub
                 return
+            # New time is better, remove old entry
+            data["times"][track] = [e for e in data["times"][track] if e["uid"] != sub["uid"]]
 
         data["times"][track].append({
             "user": sub["user"],
@@ -165,13 +166,13 @@ async def on_reaction_add(reaction, user):
         if sub_ch:
             member = guild.get_member(sub["uid"])
             mention = member.mention if member else sub["user"]
-            await sub_ch.send(f"✅ {mention} your time **{sub['time']}** on **{track}** has been approved!")
+            sub_ch.send(f"✅ {mention} your time **{sub['time']}** on **{track}** has been approved!")
 
-        await reaction.message.edit(content="✅ Approved!")
-        await reaction.message.clear_reactions()
+        reaction.message.edit(content="✅ Approved!")
+        reaction.message.clear_reactions()
 
         # Update leaderboard
-        await update_leaderboard(guild, data)
+        update_leaderboard(guild, data)
 
     elif str(reaction.emoji) == "❌":
         guild = reaction.message.guild
@@ -179,10 +180,10 @@ async def on_reaction_add(reaction, user):
         if sub_ch:
             member = guild.get_member(sub["uid"])
             mention = member.mention if member else sub["user"]
-            await sub_ch.send(f"❌ {mention} your time submission for **{sub['track']}** was rejected by an admin.")
+            sub_ch.send(f"❌ {mention} your time submission for **{sub['track']}** was rejected by an admin.")
 
-        await reaction.message.edit(content="❌ Rejected.")
-        await reaction.message.clear_reactions()
+        reaction.message.edit(content="❌ Rejected.")
+        reaction.message.clear_reactions()
 
 
 async def update_leaderboard(guild, data):
@@ -235,7 +236,8 @@ async def update_leaderboard(guild, data):
         track_embeds.append(embed)
 
     # Clear old leaderboard messages and repost
-    await lb_ch.purge(limit=50)
+    await lb_ch.purge(limit=100)
+    await asyncio.sleep(1)
     await lb_ch.send(embed=points_embed)
     for te in track_embeds:
         await lb_ch.send(embed=te)
