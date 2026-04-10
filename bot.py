@@ -24,8 +24,12 @@ times_col    = db["times"]
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def time_to_seconds(t: str) -> float:
     t = t.strip()
-    if ":" in t:
-        m, s = t.split(":")
+    parts = t.split(":")
+    if len(parts) == 3:
+        m, s, ms = parts
+        return int(m) * 60 + int(s) + int(ms) / 1000
+    elif len(parts) == 2:
+        m, s = parts
         return int(m) * 60 + float(s)
     return float(t)
 
