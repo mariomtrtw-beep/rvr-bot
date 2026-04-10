@@ -299,5 +299,4 @@ async def rvr_help(ctx):
     )
     await ctx.send(embed=embed)
 
-bot.run(TOKEN) 
-
+bot.run(TOKEN)
