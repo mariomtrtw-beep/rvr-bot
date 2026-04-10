@@ -74,7 +74,7 @@ async def on_message(message):
             )
             return
 
-        track = match.group(1).strip()
+        track = match.group(1).strip().title()
         time_str = match.group(2).strip()
         proof_url = message.attachments[0].url
 
