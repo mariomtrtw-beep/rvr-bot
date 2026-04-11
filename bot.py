@@ -192,13 +192,8 @@ async def update_leaderboard(guild):
 
     ranked = sorted(player_points.values(), key=lambda x: x["points"], reverse=True)
     medals = ["🥇", "🥈", "🥉"]
-    BANNER = "https://media.discordapp.net/attachments/1491238480993456259/1492465116426276904/image_1_1.png?ex=69db6df4&is=69da1c74&hm=b435173aac95f63652c22a1388013a4c8ab3da9588b99df379649cb4c3fef358&=&format=webp&quality=lossless&width=1141&height=652"
 
-    embed = discord.Embed(
-        color=0x00cfff,
-        timestamp=datetime.now(timezone.utc)
-    )
-    embed.set_image(url=BANNER)
+    BANNER = "https://media.discordapp.net/attachments/1491238480993456259/1492468917094846547/banner_thin.png?ex=69db717e&is=69da1ffe&hm=cf79c7f84e32dbba6128ca34a52a4793d4f029cedc6a69aa95da2cc6beac4694&=&format=webp&quality=lossless&width=1321&height=275"
 
     # Overall standings
     if ranked:
@@ -208,20 +203,31 @@ async def update_leaderboard(guild):
             standings += f"{medal} **{p['user']}** — **{p['points']} pts**\n"
     else:
         standings = "*No times submitted yet!*"
-    embed.add_field(name="🏆 __OVERALL STANDINGS__", value=standings, inline=False)
 
-    # Divider
-    embed.add_field(name="\u200b", value="▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬", inline=False)
-
-    # Per track
+    # Track times
+    tracks_text = ""
     for track, entries in all_data.items():
-        track_str = ""
+        tracks_text += f"\n**🏁 {track.upper()}**\n"
         for i, entry in enumerate(entries):
             medal = medals[i] if i < 3 else f"`#{i+1}`"
             pts = POINTS[i] if i < len(POINTS) else 0
-            track_str += f"{medal} **{entry['user']}** — `{entry['time']}` *(+{pts} pts)*\n"
-        embed.add_field(name=f"🏁 __{track}__", value=track_str, inline=True)
+            tracks_text += f"{medal} **{entry['user']}** — `{entry['time']}` *(+{pts} pts)*\n"
+        tracks_text += "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
 
+    description = (
+        "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+        "🏆 **__OVERALL STANDINGS__**\n"
+        f"{standings}"
+        "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+        f"{tracks_text}"
+    )
+
+    embed = discord.Embed(
+        description=description,
+        color=0x00cfff,
+        timestamp=datetime.now(timezone.utc)
+    )
+    embed.set_image(url=BANNER)
     embed.set_footer(text="RVR Underground • Times are best laps")
 
     await lb_ch.purge(limit=100)
