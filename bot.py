@@ -3,7 +3,7 @@ from discord.ext import commands
 import os
 import re
 import asyncio
-import datetime
+from datetime import datetime, timezone
 from motor.motor_asyncio import AsyncIOMotorClient
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -196,7 +196,7 @@ async def update_leaderboard(guild):
 
     embed = discord.Embed(
         color=0x00cfff,
-        timestamp=datetime.now(datetime.timezone.utc)
+        timestamp=datetime.now(timezone.utc)
     )
     embed.set_image(url=BANNER)
 
