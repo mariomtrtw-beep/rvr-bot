@@ -92,7 +92,7 @@ async def on_message(message):
         embed = discord.Embed(
             title="⏱️ New Time Submission",
             color=discord.Color.orange(),
-            timestamp=datetime.datetime.now(datetime.timezone.utc)
+            timestamp=datetime.now(timezone.utc)
         )
         embed.add_field(name="Player", value=f"{message.author.mention} ({message.author.name})", inline=False)
         embed.add_field(name="Track",  value=track,    inline=True)
