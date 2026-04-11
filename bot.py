@@ -76,7 +76,7 @@ async def on_message(message):
             await message.reply(
                 "❌ Wrong format! Please use:\n"
                 "`Track: <track name> | Time: <time>`\n"
-                "Example: `Track: Toys In The Hood | Time: 1:23.456`"
+                "Example: `Track: Toys In The Hood | Time: 00:41:256`"
             )
             return
 
