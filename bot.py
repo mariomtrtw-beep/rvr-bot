@@ -204,6 +204,19 @@ async def update_leaderboard(guild):
     else:
         standings = "*No times submitted yet!*"
 
+    standings_embed = discord.Embed(
+        description=(
+            "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+            "🏆 **__OVERALL STANDINGS__**\n"
+            f"{standings}"
+            "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬"
+        ),
+        color=0x00cfff,
+        timestamp=datetime.now(timezone.utc)
+    )
+    standings_embed.set_image(url=BANNER)
+    standings_embed.set_footer(text="RVR Underground • Times are best laps")
+
     # Track times
     tracks_text = ""
     for track, entries in all_data.items():
@@ -214,25 +227,15 @@ async def update_leaderboard(guild):
             tracks_text += f"{medal} **{entry['user']}** — `{entry['time']}` *(+{pts} pts)*\n"
         tracks_text += "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
 
-    description = (
-        "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-        "🏆 **__OVERALL STANDINGS__**\n"
-        f"{standings}"
-        "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-        f"{tracks_text}"
+    times_embed = discord.Embed(
+        description=tracks_text,
+        color=0x00cfff
     )
-
-    embed = discord.Embed(
-        description=description,
-        color=0x00cfff,
-        timestamp=datetime.now(timezone.utc)
-    )
-    embed.set_image(url=BANNER)
-    embed.set_footer(text="RVR Underground • Times are best laps")
 
     await lb_ch.purge(limit=100)
     await asyncio.sleep(1)
-    await lb_ch.send(embed=embed)
+    await lb_ch.send(embed=standings_embed)
+    await lb_ch.send(embed=times_embed)
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
