@@ -3,7 +3,7 @@ from discord.ext import commands
 import os
 import re
 import asyncio
-from datetime import datetime
+import datetime
 from motor.motor_asyncio import AsyncIOMotorClient
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -92,7 +92,7 @@ async def on_message(message):
         embed = discord.Embed(
             title="⏱️ New Time Submission",
             color=discord.Color.orange(),
-            timestamp=datetime.utcnow()
+            timestamp=datetime.datetime.now(datetime.timezone.utc)
         )
         embed.add_field(name="Player", value=f"{message.author.mention} ({message.author.name})", inline=False)
         embed.add_field(name="Track",  value=track,    inline=True)
@@ -179,7 +179,7 @@ async def update_leaderboard(guild):
     if not lb_ch:
         return
 
-    all_data      = await get_all_data()
+    all_data = await get_all_data()
     player_points = {}
 
     for track, entries in all_data.items():
@@ -192,37 +192,41 @@ async def update_leaderboard(guild):
 
     ranked = sorted(player_points.values(), key=lambda x: x["points"], reverse=True)
     medals = ["🥇", "🥈", "🥉"]
+    BANNER = "https://media.discordapp.net/attachments/1491238480993456259/1492465116426276904/image_1_1.png?ex=69db6df4&is=69da1c74&hm=b435173aac95f63652c22a1388013a4c8ab3da9588b99df379649cb4c3fef358&=&format=webp&quality=lossless&width=1141&height=652"
 
-    points_embed = discord.Embed(
-        title="🏆 RVR Underground — Overall Standings",
-        color=discord.Color.gold(),
-        timestamp=datetime.utcnow()
+    embed = discord.Embed(
+        color=0x00cfff,
+        timestamp=datetime.now(datetime.timezone.utc)
     )
+    embed.set_image(url=BANNER)
+
+    # Overall standings
     if ranked:
         standings = ""
         for i, p in enumerate(ranked):
-            medal      = medals[i] if i < 3 else f"`#{i+1}`"
-            standings += f"{medal} **{p['user']}** — {p['points']} pts\n"
-        points_embed.description = standings
+            medal = medals[i] if i < 3 else f"`#{i+1}`"
+            standings += f"{medal} **{p['user']}** — **{p['points']} pts**\n"
     else:
-        points_embed.description = "No times submitted yet!"
+        standings = "*No times submitted yet!*"
+    embed.add_field(name="🏆 __OVERALL STANDINGS__", value=standings, inline=False)
 
-    track_embeds = []
+    # Divider
+    embed.add_field(name="\u200b", value="▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬", inline=False)
+
+    # Per track
     for track, entries in all_data.items():
-        embed     = discord.Embed(title=f"🏁 {track}", color=discord.Color.blue())
         track_str = ""
         for i, entry in enumerate(entries):
-            medal      = medals[i] if i < 3 else f"`#{i+1}`"
-            pts        = POINTS[i] if i < len(POINTS) else 0
-            track_str += f"{medal} **{entry['user']}** — `{entry['time']}` (+{pts} pts)\n"
-        embed.description = track_str
-        track_embeds.append(embed)
+            medal = medals[i] if i < 3 else f"`#{i+1}`"
+            pts = POINTS[i] if i < len(POINTS) else 0
+            track_str += f"{medal} **{entry['user']}** — `{entry['time']}` *(+{pts} pts)*\n"
+        embed.add_field(name=f"🏁 __{track}__", value=track_str, inline=True)
+
+    embed.set_footer(text="RVR Underground • Times are best laps")
 
     await lb_ch.purge(limit=100)
     await asyncio.sleep(1)
-    await lb_ch.send(embed=points_embed)
-    for te in track_embeds:
-        await lb_ch.send(embed=te)
+    await lb_ch.send(embed=embed)
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
