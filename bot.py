@@ -397,16 +397,29 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
         "ftr":       _load_font(False, 15),
     }
 
+    # ── Load banner ───────────────────────────────────────────────────────────
+    banner_img = None
+    banner_h   = 0
+    banner_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "banner.png")
+    try:
+        raw = Image.open(banner_path).convert("RGBA")
+        bw, bh   = raw.size
+        banner_h = int(W * bh / bw)
+        banner_img = raw.resize((W, banner_h), Image.LANCZOS)
+    except Exception:
+        pass
+
     total          = len(ranked)
     top3           = ranked[:3]
     others         = ranked[3:]
-    TOP3_CARD_H    = [140, 106, 106]  # 1st place taller
+    TOP3_CARD_H    = [140, 106, 106]
     TOP3_GAP       = 10
-    OTHER_ROW_H = 58
-    header_h    = 150
-    top3_h      = sum(TOP3_CARD_H[:len(top3)]) + (len(top3) - 1) * TOP3_GAP + 24
-    others_h    = (len(others) * OTHER_ROW_H + 72) if others else 0
-    footer_h    = 56
+    OTHER_ROW_H    = 58
+    subtitle_h     = 48
+    header_h       = banner_h + subtitle_h + 16
+    top3_h         = sum(TOP3_CARD_H[:len(top3)]) + (len(top3) - 1) * TOP3_GAP + 24
+    others_h       = (len(others) * OTHER_ROW_H + 72) if others else 0
+    footer_h       = 56
     H = header_h + top3_h + others_h + footer_h
 
     # ── Base + gradient ───────────────────────────────────────────────────────
@@ -433,13 +446,13 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
     for (col, row), (x, y) in grid.items():
         if (col + 1, row) in grid and rng.random() < 0.40:
             nx, ny = grid[(col + 1, row)]
-            cdraw.line([(x, y), (nx, ny)], fill=(0, 100, 200, 45), width=1)
+            cdraw.line([(x, y), (nx, ny)], fill=(0, 120, 220, 70), width=1)
         if (col, row + 1) in grid and rng.random() < 0.40:
             nx, ny = grid[(col, row + 1)]
-            cdraw.line([(x, y), (nx, ny)], fill=(0, 100, 200, 45), width=1)
+            cdraw.line([(x, y), (nx, ny)], fill=(0, 120, 220, 70), width=1)
         if rng.random() < 0.20:
             r = rng.randint(1, 3)
-            cdraw.ellipse([(x - r, y - r), (x + r, y + r)], fill=(0, 180, 255, 70))
+            cdraw.ellipse([(x - r, y - r), (x + r, y + r)], fill=(0, 200, 255, 100))
     img = Image.alpha_composite(img, circuit)
 
     # ── Scanlines ─────────────────────────────────────────────────────────────
@@ -488,13 +501,18 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
             d.line(pts, fill=(*color[:3], 255), width=bw)
 
     # ── HEADER ────────────────────────────────────────────────────────────────
-    glow_line(PAD, 28, W // 2 - 220, 28, CYAN, radius=3)
-    glow_line(W // 2 + 220, 28, W - PAD, 28, CYAN, radius=3)
-    glow_text("RVR UNDERGROUND", (W // 2, 26), fnt["title"], CYAN, radius=22)
+    if banner_img:
+        img.paste(banner_img, (0, 0), banner_img)
+    else:
+        glow_line(PAD, 28, W // 2 - 220, 28, CYAN, radius=3)
+        glow_line(W // 2 + 220, 28, W - PAD, 28, CYAN, radius=3)
+        glow_text("RVR UNDERGROUND", (W // 2, 26), fnt["title"], CYAN, radius=22)
+
     draw = ImageDraw.Draw(img)
-    draw.text((W // 2, 112), f"//  {cycle.upper()} MONTHLY CHAMPIONSHIP  //",
+    sub_y = banner_h + 8
+    draw.text((W // 2, sub_y), f"//  {cycle.upper()} MONTHLY CHAMPIONSHIP  //",
               fill=(*WHITE, 165), font=fnt["sub"], anchor="mt")
-    glow_line(PAD, 144, W - PAD, 144, CYAN, radius=3)
+    glow_line(PAD, sub_y + 30, W - PAD, sub_y + 30, CYAN, radius=3)
 
     # ── TOP 3 CARDS ───────────────────────────────────────────────────────────
     podium_colors = [GOLD, SILVER, BRONZE]
