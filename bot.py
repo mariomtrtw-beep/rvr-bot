@@ -386,15 +386,15 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
     DIV     = (28,  48,  78)
 
     fnt = {
-        "title":     _load_font(True,  72),
-        "sub":       _load_font(False, 21),
-        "place_lbl": _load_font(True,  28),
-        "name_top3": _load_font(True,  46),
-        "pts_top3":  _load_font(True,  42),
-        "name_rest": _load_font(True,  30),
-        "pts_rest":  _load_font(True,  28),
-        "sec_hdr":   _load_font(True,  26),
-        "ftr":       _load_font(False, 15),
+        "title":     _load_font(True,  83),
+        "sub":       _load_font(False, 24),
+        "place_lbl": _load_font(True,  33),
+        "name_top3": _load_font(True,  53),
+        "pts_top3":  _load_font(True,  48),
+        "name_rest": _load_font(True,  35),
+        "pts_rest":  _load_font(True,  33),
+        "sec_hdr":   _load_font(True,  30),
+        "ftr":       _load_font(False, 17),
     }
 
     # ── Load banner ───────────────────────────────────────────────────────────
@@ -420,9 +420,9 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
     total          = len(ranked)
     top3           = ranked[:3]
     others         = ranked[3:]
-    TOP3_CARD_H    = [140, 106, 106]
+    TOP3_CARD_H    = [158, 120, 120]
     TOP3_GAP       = 10
-    OTHER_ROW_H    = 58
+    OTHER_ROW_H    = 66
     subtitle_h     = 48
     header_h       = banner_h + subtitle_h + 16
     top3_h         = sum(TOP3_CARD_H[:len(top3)]) + (len(top3) - 1) * TOP3_GAP + 24
