@@ -6,7 +6,7 @@ import asyncio
 import io
 from datetime import datetime, timezone
 from motor.motor_asyncio import AsyncIOMotorClient
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 # ── Config ────────────────────────────────────────────────────────────────────
 TOKEN     = os.environ["DISCORD_TOKEN"]
@@ -335,98 +335,174 @@ async def remove_time(ctx, member: discord.Member, *, track_name: str):
 _FONT_BOLD    = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 _FONT_REGULAR = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
-def _fonts(sizes: dict) -> dict:
-    out = {}
-    for key, size in sizes.items():
-        path = _FONT_BOLD if "bold" in key else _FONT_REGULAR
-        try:
-            out[key] = ImageFont.truetype(path, size)
-        except OSError:
-            out[key] = ImageFont.load_default()
-    return out
+def _load_font(path: str, size: int) -> ImageFont.FreeTypeFont:
+    try:
+        return ImageFont.truetype(path, size)
+    except OSError:
+        return ImageFont.load_default()
 
 def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
-    W   = 780
-    PAD = 30
+    W   = 1000
+    PAD = 44
 
-    BG         = (13,  17,  23)
-    CARD_BG    = (22,  27,  34)
-    ACCENT     = (0,   207, 255)
-    GOLD       = (255, 215, 0)
-    SILVER     = (192, 192, 192)
-    BRONZE     = (205, 127, 50)
-    WHITE      = (255, 255, 255)
-    GRAY       = (139, 148, 158)
-    DIVIDER    = (48,  54,  61)
+    BG_TOP  = (8,   10,  22)
+    BG_BOT  = (16,   6,  32)
+    CYAN    = (0,  207, 255)
+    GOLD    = (255, 215,   0)
+    SILVER  = (200, 210, 220)
+    BRONZE  = (205, 127,  50)
+    WHITE   = (255, 255, 255)
+    GRAY    = (110, 120, 138)
+    CARD_BG = (18,  22,  38, 235)
+    DIV     = (38,  46,  60)
 
-    f = _fonts({
-        "bold_title":  38,
-        "regular_sub": 17,
-        "bold_month":  28,
-        "regular_lbl": 14,
-        "bold_name":   22,
-        "bold_pts":    22,
-        "regular_row": 17,
-        "regular_ftr": 13,
-    })
+    B = _FONT_BOLD
+    R = _FONT_REGULAR
+    fnt = {
+        "title":   _load_font(B, 58),
+        "sub":     _load_font(R, 20),
+        "place":   _load_font(B, 15),
+        "name1":   _load_font(B, 36),
+        "name23":  _load_font(B, 26),
+        "pts1":    _load_font(B, 32),
+        "pts23":   _load_font(B, 22),
+        "row":     _load_font(R, 20),
+        "row_hdr": _load_font(B, 15),
+        "ftr":     _load_font(R, 14),
+    }
 
-    header_h = 88
-    month_h  = 52
-    podium_h = min(3, len(ranked)) * 76
-    others_h = (max(0, len(ranked) - 3) * 36 + 40) if len(ranked) > 3 else 0
-    footer_h = 48
-    H = header_h + month_h + podium_h + others_h + footer_h + 10
+    others   = ranked[3:]
+    header_h = 132
+    podium_h = 250
+    others_h = (len(others) * 46 + 68) if others else 0
+    footer_h = 54
+    H = header_h + podium_h + others_h + footer_h
 
-    img  = Image.new("RGB", (W, H), BG)
+    # Work in RGBA throughout for compositing
+    img = Image.new("RGBA", (W, H), (*BG_TOP, 255))
+
+    # Gradient background
     draw = ImageDraw.Draw(img)
+    for y in range(H):
+        t = y / H
+        c = tuple(int(BG_TOP[i] + t * (BG_BOT[i] - BG_TOP[i])) for i in range(3))
+        draw.line([(0, y), (W - 1, y)], fill=(*c, 255))
 
-    # Header
-    draw.rectangle([0, 0, W, header_h - 8], fill=CARD_BG)
-    draw.text((W // 2, 16), "RVR UNDERGROUND", fill=ACCENT, font=f["bold_title"],  anchor="mt")
-    draw.text((W // 2, 60), "MONTHLY RESULTS",  fill=GRAY,   font=f["regular_sub"], anchor="mt")
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    def glow_text(text, pos, font, color, radius=16, anchor="mt"):
+        nonlocal img
+        gl = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        ImageDraw.Draw(gl).text(pos, text, fill=(*color[:3], 170), font=font, anchor=anchor)
+        gl = gl.filter(ImageFilter.GaussianBlur(radius))
+        img = Image.alpha_composite(img, gl)
+        img = Image.alpha_composite(img, gl)
+        ImageDraw.Draw(img).text(pos, text, fill=(*color[:3], 255), font=font, anchor=anchor)
 
-    # Month
-    y = header_h
-    draw.text((W // 2, y + 8), cycle.upper(), fill=WHITE, font=f["bold_month"], anchor="mt")
-    draw.line([(PAD, y + 44), (W - PAD, y + 44)], fill=ACCENT, width=2)
+    def glow_card(x1, y1, x2, y2, color, radius=10, border=2, glow_r=16):
+        nonlocal img
+        gl = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        ImageDraw.Draw(gl).rounded_rectangle(
+            (x1, y1, x2, y2), radius=radius,
+            outline=(*color[:3], 150), width=border + 3
+        )
+        gl = gl.filter(ImageFilter.GaussianBlur(glow_r))
+        img = Image.alpha_composite(img, gl)
+        img = Image.alpha_composite(img, gl)
+        ImageDraw.Draw(img).rounded_rectangle(
+            (x1, y1, x2, y2), radius=radius,
+            fill=CARD_BG, outline=(*color[:3], 255), width=border
+        )
 
-    # Podium cards
-    y = header_h + month_h
-    podium_colors = [GOLD, SILVER, BRONZE]
-    podium_labels = ["1ST PLACE", "2ND PLACE", "3RD PLACE"]
+    # ── HEADER ────────────────────────────────────────────────────────────────
+    draw = ImageDraw.Draw(img)
+    draw.line([(PAD, 20), (W - PAD, 20)], fill=(*CYAN, 50), width=1)
 
-    for i in range(min(3, len(ranked))):
-        p     = ranked[i]
-        color = podium_colors[i]
-        y1, y2 = y, y + 68
+    glow_text("RVR UNDERGROUND", (W // 2, 28), fnt["title"], CYAN, radius=20)
 
-        draw.rounded_rectangle([PAD,      y1, W - PAD, y2], radius=6, fill=CARD_BG)
-        draw.rounded_rectangle([PAD,      y1, PAD + 8, y2], radius=6, fill=color)
-        draw.text((PAD + 20, y1 + 9),  podium_labels[i],  fill=color, font=f["regular_lbl"])
-        draw.text((PAD + 20, y1 + 30), p["user"],          fill=WHITE, font=f["bold_name"])
-        draw.text((W - PAD - 10, y1 + 32), f"{p['points']} pts", fill=color, font=f["bold_pts"], anchor="rm")
-        y += 76
+    draw = ImageDraw.Draw(img)
+    draw.text(
+        (W // 2, 98),
+        f"★   {cycle.upper()} MONTHLY CHAMPIONSHIP   ★",
+        fill=(*WHITE, 190), font=fnt["sub"], anchor="mt"
+    )
+    draw.line([(PAD, 128), (W - PAD, 128)], fill=(*CYAN, 110), width=1)
 
-    # Other finishers
-    if len(ranked) > 3:
-        y += 6
-        draw.line([(PAD, y), (W - PAD, y)], fill=DIVIDER, width=1)
-        y += 10
-        draw.text((W // 2, y), "OTHER FINISHERS", fill=GRAY, font=f["regular_lbl"], anchor="mt")
-        y += 26
-        for i, p in enumerate(ranked[3:], start=4):
-            draw.text((PAD + 10,      y), f"#{i}",          fill=GRAY,  font=f["regular_row"])
-            draw.text((PAD + 48,      y), p["user"],         fill=WHITE, font=f["regular_row"])
-            draw.text((W - PAD - 10, y), f"{p['points']} pts", fill=GRAY, font=f["regular_row"], anchor="rm")
-            y += 36
+    # ── PODIUM ────────────────────────────────────────────────────────────────
+    # Layout (left→right): 2ND  |  1ST (taller)  |  3RD
+    y0     = header_h + 14
+    C1W, C1H = 340, 210
+    C23W, C23H = 256, 165
+    GAP = 14
 
-    # Footer
+    c1x1 = W // 2 - C1W // 2
+    c1x2 = W // 2 + C1W // 2
+    c1y1 = y0
+    c1y2 = y0 + C1H
+
+    c2x2 = c1x1 - GAP
+    c2x1 = c2x2 - C23W
+    c2y1 = y0 + (C1H - C23H)
+    c2y2 = c2y1 + C23H
+
+    c3x1 = c1x2 + GAP
+    c3x2 = c3x1 + C23W
+    c3y1 = y0 + (C1H - C23H) + 20
+    c3y2 = c3y1 + C23H - 20
+
+    # 1st place — gold glow
+    glow_card(c1x1, c1y1, c1x2, c1y2, GOLD, glow_r=22)
+    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle((c1x1, c1y1, c1x1 + 8, c1y2), radius=10, fill=(*GOLD, 255))
+    draw.text((c1x1 + 22, c1y1 + 14), "1ST PLACE",          fill=(*GOLD,  255), font=fnt["place"])
+    draw.text((c1x1 + 22, c1y1 + 16), "WINNER",             fill=(*GOLD,  120), font=fnt["place"])  # ghost label
+    glow_text(ranked[0]["user"],       (W // 2, c1y1 + 50),  fnt["name1"],  WHITE, radius=8, anchor="mt")
+    draw = ImageDraw.Draw(img)
+    draw.text((W // 2, c1y1 + 102),   f"{ranked[0]['points']} pts", fill=(*GOLD, 255), font=fnt["pts1"],  anchor="mt")
+    draw.text((W // 2, c1y1 + 150),   "★  CHAMPION  ★",    fill=(*GOLD, 200), font=fnt["place"], anchor="mt")
+
+    # 2nd place — silver
+    if len(ranked) >= 2:
+        glow_card(c2x1, c2y1, c2x2, c2y2, SILVER, glow_r=10)
+        draw = ImageDraw.Draw(img)
+        draw.rounded_rectangle((c2x1, c2y1, c2x1 + 7, c2y2), radius=10, fill=(*SILVER, 255))
+        draw.text((c2x1 + 18, c2y1 + 12), "2ND PLACE",             fill=(*SILVER, 255), font=fnt["place"])
+        draw.text((c2x1 + 18, c2y1 + 36), ranked[1]["user"],        fill=(*WHITE,  255), font=fnt["name23"])
+        draw.text((c2x1 + 18, c2y1 + 76), f"{ranked[1]['points']} pts", fill=(*SILVER, 255), font=fnt["pts23"])
+
+    # 3rd place — bronze
+    if len(ranked) >= 3:
+        glow_card(c3x1, c3y1, c3x2, c3y2, BRONZE, glow_r=10)
+        draw = ImageDraw.Draw(img)
+        draw.rounded_rectangle((c3x1, c3y1, c3x1 + 7, c3y2), radius=10, fill=(*BRONZE, 255))
+        draw.text((c3x1 + 18, c3y1 + 12), "3RD PLACE",             fill=(*BRONZE, 255), font=fnt["place"])
+        draw.text((c3x1 + 18, c3y1 + 36), ranked[2]["user"],        fill=(*WHITE,  255), font=fnt["name23"])
+        draw.text((c3x1 + 18, c3y1 + 76), f"{ranked[2]['points']} pts", fill=(*BRONZE, 255), font=fnt["pts23"])
+
+    # ── OTHER FINISHERS ───────────────────────────────────────────────────────
+    y = header_h + podium_h + 14
+    if others:
+        draw = ImageDraw.Draw(img)
+        draw.line([(PAD, y), (W - PAD, y)], fill=(*DIV, 255), width=1)
+        y += 12
+        draw.text((W // 2, y), "OTHER FINISHERS", fill=(*GRAY, 255), font=fnt["row_hdr"], anchor="mt")
+        y += 34
+        for i, p in enumerate(others, start=4):
+            if i % 2 == 0:
+                draw.rectangle([(PAD, y - 4), (W - PAD, y + 38)], fill=(22, 27, 42, 255))
+            draw.text((PAD + 12,      y + 6), f"#{i}",              fill=(*GRAY,  255), font=fnt["row"])
+            draw.text((PAD + 60,      y + 6), p["user"],            fill=(*WHITE, 255), font=fnt["row"])
+            draw.text((W - PAD - 12, y + 6), f"{p['points']} pts", fill=(*GRAY,  255), font=fnt["row"], anchor="rm")
+            y += 46
+
+    # ── FOOTER ────────────────────────────────────────────────────────────────
     fy = H - footer_h
-    draw.line([(PAD, fy + 4), (W - PAD, fy + 4)], fill=ACCENT, width=1)
-    draw.text((W // 2, fy + 18), "RVR Underground  •  Times are best laps", fill=GRAY, font=f["regular_ftr"], anchor="mt")
+    draw = ImageDraw.Draw(img)
+    draw.line([(PAD, fy + 6), (W - PAD, fy + 6)], fill=(*CYAN, 90), width=1)
+    draw.text((W // 2, fy + 20), "RVR Underground  •  Times are best laps",
+              fill=(*GRAY, 255), font=fnt["ftr"], anchor="mt")
 
     buf = io.BytesIO()
-    img.save(buf, format="PNG")
+    img.convert("RGB").save(buf, format="PNG")
     buf.seek(0)
     return buf
 
