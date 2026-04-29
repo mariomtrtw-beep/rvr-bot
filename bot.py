@@ -388,23 +388,23 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
     fnt = {
         "title":     _load_font(True,  72),
         "sub":       _load_font(False, 21),
-        "place_lbl": _load_font(True,  19),
+        "place_lbl": _load_font(True,  28),
         "name_top3": _load_font(True,  46),
         "pts_top3":  _load_font(True,  42),
         "name_rest": _load_font(True,  30),
         "pts_rest":  _load_font(True,  28),
-        "sec_hdr":   _load_font(True,  17),
+        "sec_hdr":   _load_font(True,  26),
         "ftr":       _load_font(False, 15),
     }
 
-    total       = len(ranked)
-    top3        = ranked[:3]
-    others      = ranked[3:]
-    TOP3_CARD_H = 106
-    TOP3_GAP    = 10
+    total          = len(ranked)
+    top3           = ranked[:3]
+    others         = ranked[3:]
+    TOP3_CARD_H    = [140, 106, 106]  # 1st place taller
+    TOP3_GAP       = 10
     OTHER_ROW_H = 58
     header_h    = 150
-    top3_h      = len(top3) * TOP3_CARD_H + (len(top3) - 1) * TOP3_GAP + 24
+    top3_h      = sum(TOP3_CARD_H[:len(top3)]) + (len(top3) - 1) * TOP3_GAP + 24
     others_h    = (len(others) * OTHER_ROW_H + 72) if others else 0
     footer_h    = 56
     H = header_h + top3_h + others_h + footer_h
@@ -433,13 +433,13 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
     for (col, row), (x, y) in grid.items():
         if (col + 1, row) in grid and rng.random() < 0.40:
             nx, ny = grid[(col + 1, row)]
-            cdraw.line([(x, y), (nx, ny)], fill=(0, 70, 160, 20), width=1)
+            cdraw.line([(x, y), (nx, ny)], fill=(0, 100, 200, 45), width=1)
         if (col, row + 1) in grid and rng.random() < 0.40:
             nx, ny = grid[(col, row + 1)]
-            cdraw.line([(x, y), (nx, ny)], fill=(0, 70, 160, 20), width=1)
+            cdraw.line([(x, y), (nx, ny)], fill=(0, 100, 200, 45), width=1)
         if rng.random() < 0.20:
             r = rng.randint(1, 3)
-            cdraw.ellipse([(x - r, y - r), (x + r, y + r)], fill=(0, 140, 220, 35))
+            cdraw.ellipse([(x - r, y - r), (x + r, y + r)], fill=(0, 180, 255, 70))
     img = Image.alpha_composite(img, circuit)
 
     # ── Scanlines ─────────────────────────────────────────────────────────────
@@ -502,20 +502,21 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
 
     y = header_h + 14
     for i, p in enumerate(top3):
-        color = podium_colors[i]
-        pc    = pts_color(i, total)
-        x1, y1, x2, y2 = PAD, y, W - PAD, y + TOP3_CARD_H
+        color  = podium_colors[i]
+        pc     = pts_color(i, total)
+        card_h = TOP3_CARD_H[i]
+        x1, y1, x2, y2 = PAD, y, W - PAD, y + card_h
 
         bracket_card(x1, y1, x2, y2, color, bl=30, bw=2)
 
         draw = ImageDraw.Draw(img)
         draw.rectangle([(x1 + 1, y1 + 1), (x1 + 10, y2 - 1)], fill=(*color, 255))
         draw.text((x1 + 26, y1 + 10), podium_labels[i], fill=(*color, 255), font=fnt["place_lbl"])
-        draw.text((x1 + 26, y1 + 36), p["user"],        fill=(*WHITE, 255), font=fnt["name_top3"])
-        draw.text((x2 - 20, y1 + TOP3_CARD_H // 2),
+        draw.text((x1 + 26, y1 + 46), p["user"],        fill=(*WHITE, 255), font=fnt["name_top3"])
+        draw.text((x2 - 20, y1 + card_h // 2),
                   f"{p['points']} pts", fill=(*pc, 255), font=fnt["pts_top3"], anchor="rm")
 
-        y += TOP3_CARD_H + TOP3_GAP
+        y += card_h + TOP3_GAP
 
     # ── OTHER FINISHERS ───────────────────────────────────────────────────────
     if others:
