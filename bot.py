@@ -329,10 +329,34 @@ async def remove_time(ctx, member: discord.Member, *, track_name: str):
     await ctx.send(f"✅ Removed {member.name}'s time from `{track_name}`.")
     await update_leaderboard(ctx.guild)
 
+def build_standings(ranked: list, mention: bool) -> tuple[str, str, str]:
+    """Returns (podium_text, rest_text, winner_str) for use in embeds."""
+    medals = ["🥇", "🥈", "🥉"]
+    podium_labels = ["🥇 FIRST PLACE", "🥈 SECOND PLACE", "🥉 THIRD PLACE"]
+
+    podium_text = ""
+    rest_text   = ""
+    winner_str  = "nobody (no times submitted!)"
+
+    for i, p in enumerate(ranked):
+        name = f"<@{p['uid']}>" if mention else f"**{p['user']}**"
+        if i == 0:
+            winner_str   = name
+            podium_text += f"**{podium_labels[0]}**\n{name} — **{p['points']} pts**\n\n"
+        elif i == 1:
+            podium_text += f"**{podium_labels[1]}**\n{name} — **{p['points']} pts**\n\n"
+        elif i == 2:
+            podium_text += f"**{podium_labels[2]}**\n{name} — **{p['points']} pts**\n"
+        else:
+            medal       = medals[i] if i < len(medals) else f"`#{i+1}`"
+            rest_text  += f"{medal} {name} — **{p['points']} pts**\n"
+
+    return podium_text, rest_text, winner_str
+
+
 @bot.command(name="previewmonth")
 @commands.has_permissions(manage_guild=True)
 async def preview_month(ctx):
-    """Preview what the monthly results will look like without closing the cycle."""
     cycle    = await get_current_cycle()
     all_data = await get_all_data(cycle)
 
@@ -346,34 +370,39 @@ async def preview_month(ctx):
             player_points[uid]["points"] += pts
 
     ranked = sorted(player_points.values(), key=lambda x: x["points"], reverse=True)
-    medals = ["🥇", "🥈", "🥉"]
 
     if ranked:
-        winner         = ranked[0]
-        winner_mention = f"<@{winner['uid']}>"
-        standings_text = ""
-        for i, p in enumerate(ranked):
-            medal = medals[i] if i < 3 else f"`#{i+1}`"
-            standings_text += f"{medal} <@{p['uid']}> — **{p['points']} pts**\n"
+        podium_text, rest_text, winner_str = build_standings(ranked, mention=False)
+        standings_section = (
+            f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+            f"🏆 **PODIUM**\n\n"
+            f"{podium_text}"
+        )
+        if rest_text:
+            standings_section += (
+                f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+                f"**OTHER FINISHERS**\n"
+                f"{rest_text}"
+            )
+        standings_section += "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬"
     else:
-        winner_mention = "nobody (no times submitted!)"
-        standings_text = "*No times were submitted this month.*"
+        winner_str        = "nobody (no times submitted!)"
+        standings_section = "*No times were submitted this month.*"
 
     embed = discord.Embed(
         title=f"👀 PREVIEW — {cycle} Monthly Results",
         description=(
             f"*This is a preview only — nothing has been closed.*\n\n"
-            f"👑 **Winner: {winner_mention}**\n\n"
-            f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-            f"**FINAL STANDINGS**\n"
-            f"{standings_text}"
-            f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬"
+            f"👑 **This month's winner: {winner_str}**\n\n"
+            f"{standings_section}"
         ),
         color=0x888888,
         timestamp=datetime.now(timezone.utc)
     )
+    embed.set_image(url=BANNER)
     embed.set_footer(text="RVR Underground • Preview only — use !closemonth to finalize")
     await ctx.send(embed=embed)
+
 
 @bot.command(name="closemonth")
 @commands.has_permissions(manage_guild=True)
@@ -381,7 +410,6 @@ async def close_month(ctx):
     cycle    = await get_current_cycle()
     all_data = await get_all_data(cycle)
 
-    # Calculate final standings
     player_points = {}
     for track, entries in all_data.items():
         for i, entry in enumerate(entries):
@@ -392,50 +420,54 @@ async def close_month(ctx):
             player_points[uid]["points"] += pts
 
     ranked = sorted(player_points.values(), key=lambda x: x["points"], reverse=True)
-    medals = ["🥇", "🥈", "🥉"]
 
-    # Find the monthly results channel
     results_ch = discord.utils.get(ctx.guild.text_channels, name=MONTHLY_RESULTS_CHANNEL)
     if not results_ch:
         await ctx.send(f"❌ Channel `#{MONTHLY_RESULTS_CHANNEL}` not found. Please create it first.")
         return
 
-    # Build the winner line and standings
     if ranked:
-        winner         = ranked[0]
-        winner_mention = f"<@{winner['uid']}>"
-        standings_text = ""
-        for i, p in enumerate(ranked):
-            medal = medals[i] if i < 3 else f"`#{i+1}`"
-            standings_text += f"{medal} <@{p['uid']}> — **{p['points']} pts**\n"
-    else:
-        winner_mention = "nobody (no times submitted!)"
-        standings_text = "*No times were submitted this month.*"
-
-    # Main results embed
-    results_embed = discord.Embed(
-        title=f"🏆 {cycle} — Monthly Results",
-        description=(
-            f"The **{cycle}** monthly cycle has come to an end!\n\n"
-            f"👑 **Winner: {winner_mention}** — congratulations!\n\n"
+        podium_text, rest_text, winner_str = build_standings(ranked, mention=True)
+        standings_section = (
             f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-            f"**FINAL STANDINGS**\n"
-            f"{standings_text}"
-            f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬"
+            f"🏆 **PODIUM**\n\n"
+            f"{podium_text}"
+        )
+        if rest_text:
+            standings_section += (
+                f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+                f"**OTHER FINISHERS**\n"
+                f"{rest_text}"
+            )
+        standings_section += "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬"
+    else:
+        winner_str        = "nobody (no times submitted!)"
+        standings_section = "*No times were submitted this month.*"
+
+    # Announcement embed
+    announce_embed = discord.Embed(
+        title=f"🏁 {cycle} — The Race Is Over!",
+        description=(
+            f"Another month of racing has come to an end!\n"
+            f"Here are **{cycle}'s** final results:\n\n"
+            f"👑 **WINNER: {winner_str}** 👑\n"
+            f"*Congratulations — you are this month's champion!*\n\n"
+            f"{standings_section}"
         ),
         color=0xFFD700,
         timestamp=datetime.now(timezone.utc)
     )
-    results_embed.set_image(url=BANNER)
-    results_embed.set_footer(text="RVR Underground • Monthly Cycle Closed")
+    announce_embed.set_image(url=BANNER)
+    announce_embed.set_footer(text="RVR Underground • Monthly Cycle Closed")
 
     # Track breakdown embed
     tracks_text = ""
     for track, entries in all_data.items():
         tracks_text += f"\n**🏁 {track.upper()}**\n"
         for i, entry in enumerate(entries):
-            medal = medals[i] if i < 3 else f"`#{i+1}`"
-            pts   = POINTS[i] if i < len(POINTS) else 0
+            medals = ["🥇", "🥈", "🥉"]
+            medal  = medals[i] if i < len(medals) else f"`#{i+1}`"
+            pts    = POINTS[i] if i < len(POINTS) else 0
             tracks_text += f"{medal} <@{entry['uid']}> — `{entry['time']}` *(+{pts} pts)*\n"
         tracks_text += "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
 
@@ -445,7 +477,7 @@ async def close_month(ctx):
         color=0xFFD700
     )
 
-    await results_ch.send(embed=results_embed)
+    await results_ch.send(embed=announce_embed)
     if tracks_text:
         await results_ch.send(embed=tracks_embed)
 
