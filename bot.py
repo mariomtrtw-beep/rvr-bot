@@ -652,8 +652,8 @@ async def preview_month(ctx):
     winner_name = ranked[0]["user"] if ranked else "nobody"
 
     announcement = (
-        f"<:RVRU:1495544256444633198> The **{cycle}** Championship is over! <:RVRU:1495544256444633198>\n"
-        f"The dust has settled, the times are locked in — **{winner_name}**👑 takes the crown this month.\n"
+        f"<:RVRU:1495544256444633198> The **{cycle}** Months Championship is over! <:RVRU:1495544256444633198>\n"
+        f"The dust has settled, the times are locked in — **{winner_name}** 👑 takes the crown this month.\n"
         f"See you on the track in **{next_month_name}**.\n\n"
         f"*(preview — nothing has been closed yet)*"
     )
