@@ -398,14 +398,22 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
     }
 
     # ── Load banner ───────────────────────────────────────────────────────────
-    banner_img = None
-    banner_h   = 0
-    banner_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "banner.png")
+    banner_img  = None
+    banner_h    = 0
+    MAX_BANNER_H = 200
+    banner_path  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "banner.png")
     try:
-        raw = Image.open(banner_path).convert("RGBA")
-        bw, bh   = raw.size
-        banner_h = int(W * bh / bw)
-        banner_img = raw.resize((W, banner_h), Image.LANCZOS)
+        raw       = Image.open(banner_path).convert("RGBA")
+        bw, bh    = raw.size
+        full_h    = int(W * bh / bw)
+        resized   = raw.resize((W, full_h), Image.LANCZOS)
+        if full_h > MAX_BANNER_H:
+            crop_top   = (full_h - MAX_BANNER_H) // 2
+            banner_img = resized.crop((0, crop_top, W, crop_top + MAX_BANNER_H))
+            banner_h   = MAX_BANNER_H
+        else:
+            banner_img = resized
+            banner_h   = full_h
     except Exception:
         pass
 
@@ -446,13 +454,13 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
     for (col, row), (x, y) in grid.items():
         if (col + 1, row) in grid and rng.random() < 0.40:
             nx, ny = grid[(col + 1, row)]
-            cdraw.line([(x, y), (nx, ny)], fill=(0, 120, 220, 70), width=1)
+            cdraw.line([(x, y), (nx, ny)], fill=(0, 140, 255, 100), width=1)
         if (col, row + 1) in grid and rng.random() < 0.40:
             nx, ny = grid[(col, row + 1)]
-            cdraw.line([(x, y), (nx, ny)], fill=(0, 120, 220, 70), width=1)
+            cdraw.line([(x, y), (nx, ny)], fill=(0, 140, 255, 100), width=1)
         if rng.random() < 0.20:
             r = rng.randint(1, 3)
-            cdraw.ellipse([(x - r, y - r), (x + r, y + r)], fill=(0, 200, 255, 100))
+            cdraw.ellipse([(x - r, y - r), (x + r, y + r)], fill=(0, 210, 255, 140))
     img = Image.alpha_composite(img, circuit)
 
     # ── Scanlines ─────────────────────────────────────────────────────────────
