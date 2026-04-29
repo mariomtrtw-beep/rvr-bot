@@ -643,11 +643,23 @@ async def preview_month(ctx):
         await ctx.send("No times submitted this month yet.")
         return
 
-    img_buf = generate_results_image(cycle, ranked)
-    await ctx.send(
-        content="👀 **PREVIEW** — nothing has been closed yet.",
-        file=discord.File(img_buf, filename="preview.png")
+    now = datetime.now(timezone.utc)
+    if now.month == 12:
+        next_month_name = datetime(now.year + 1, 1, 1, tzinfo=timezone.utc).strftime("%B")
+    else:
+        next_month_name = datetime(now.year, now.month + 1, 1, tzinfo=timezone.utc).strftime("%B")
+
+    winner_name = ranked[0]["user"] if ranked else "nobody"
+
+    announcement = (
+        f"⚡ The **{cycle}** Championship is over!\n"
+        f"The dust has settled, the times are locked in — **{winner_name}** takes the crown this month.\n"
+        f"See you on the track in **{next_month_name}**. 👑\n\n"
+        f"*(preview — nothing has been closed yet)*"
     )
+
+    img_buf = generate_results_image(cycle, ranked)
+    await ctx.send(content=announcement, file=discord.File(img_buf, filename="preview.png"))
 
 
 @bot.command(name="closemonth")
@@ -672,8 +684,6 @@ async def close_month(ctx):
         await ctx.send(f"❌ Channel `#{MONTHLY_RESULTS_CHANNEL}` not found. Please create it first.")
         return
 
-    winner_mention = f"<@{ranked[0]['uid']}>" if ranked else "nobody"
-
     # Track breakdown embed
     tracks_text = ""
     for track, entries in all_data.items():
@@ -691,18 +701,32 @@ async def close_month(ctx):
         color=0xFFD700
     )
 
-    months_role = discord.utils.get(ctx.guild.roles, name="Months")
-    if months_role:
-        await results_ch.send(months_role.mention)
+    # Build next month name for the closing message
+    now = datetime.now(timezone.utc)
+    if now.month == 12:
+        next_month_name = datetime(now.year + 1, 1, 1, tzinfo=timezone.utc).strftime("%B")
+    else:
+        next_month_name = datetime(now.year, now.month + 1, 1, tzinfo=timezone.utc).strftime("%B")
+
+    months_role   = discord.utils.get(ctx.guild.roles, name="Months")
+    role_ping     = months_role.mention if months_role else ""
+    winner_mention = f"<@{ranked[0]['uid']}>" if ranked else "nobody"
 
     if ranked:
         img_buf = generate_results_image(cycle, ranked)
-        await results_ch.send(
-            content=f"🏁 **{cycle} — The Race Is Over!**\n👑 **Winner: {winner_mention}** — congratulations!",
-            file=discord.File(img_buf, filename="results.png")
+        announcement = (
+            f"{role_ping}\n\n"
+            f"⚡ The **{cycle}** Championship is over!\n"
+            f"The dust has settled, the times are locked in — {winner_mention} takes the crown this month.\n"
+            f"See you on the track in **{next_month_name}**. 👑"
         )
+        await results_ch.send(content=announcement, file=discord.File(img_buf, filename="results.png"))
     else:
-        await results_ch.send(f"🏁 **{cycle}** has ended — no times were submitted this month.")
+        await results_ch.send(
+            f"{role_ping}\n\n"
+            f"⚡ The **{cycle}** Championship is over!\n"
+            f"No times were submitted this month — see you in **{next_month_name}**. 👑"
+        )
 
     if tracks_text:
         await results_ch.send(embed=tracks_embed)
