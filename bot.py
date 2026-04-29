@@ -331,7 +331,6 @@ async def remove_time(ctx, member: discord.Member, *, track_name: str):
 
 def build_standings(ranked: list, mention: bool) -> tuple[str, str, str]:
     """Returns (podium_text, rest_text, winner_str) for use in embeds."""
-    medals = ["🥇", "🥈", "🥉"]
     podium_labels = ["🥇 FIRST PLACE", "🥈 SECOND PLACE", "🥉 THIRD PLACE"]
 
     podium_text = ""
@@ -339,17 +338,16 @@ def build_standings(ranked: list, mention: bool) -> tuple[str, str, str]:
     winner_str  = "nobody (no times submitted!)"
 
     for i, p in enumerate(ranked):
-        name = f"<@{p['uid']}>" if mention else f"**{p['user']}**"
+        name = f"<@{p['uid']}>" if mention else p['user']
         if i == 0:
             winner_str   = name
-            podium_text += f"**{podium_labels[0]}**\n{name} — **{p['points']} pts**\n\n"
+            podium_text += f"**{podium_labels[0]}**\n**{name}** — **{p['points']} pts**\n\n"
         elif i == 1:
-            podium_text += f"**{podium_labels[1]}**\n{name} — **{p['points']} pts**\n\n"
+            podium_text += f"**{podium_labels[1]}**\n**{name}** — **{p['points']} pts**\n\n"
         elif i == 2:
-            podium_text += f"**{podium_labels[2]}**\n{name} — **{p['points']} pts**\n"
+            podium_text += f"**{podium_labels[2]}**\n**{name}** — **{p['points']} pts**\n"
         else:
-            medal       = medals[i] if i < len(medals) else f"`#{i+1}`"
-            rest_text  += f"{medal} {name} — **{p['points']} pts**\n"
+            rest_text += f"`#{i+1}` **{name}** — **{p['points']} pts**\n"
 
     return podium_text, rest_text, winner_str
 
@@ -477,6 +475,9 @@ async def close_month(ctx):
         color=0xFFD700
     )
 
+    months_role = discord.utils.get(ctx.guild.roles, name="Months")
+    if months_role:
+        await results_ch.send(months_role.mention)
     await results_ch.send(embed=announce_embed)
     if tracks_text:
         await results_ch.send(embed=tracks_embed)
