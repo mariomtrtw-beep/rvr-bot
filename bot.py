@@ -426,7 +426,7 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
     subtitle_h     = 48
     header_h       = banner_h + subtitle_h + 16
     top3_h         = sum(TOP3_CARD_H[:len(top3)]) + (len(top3) - 1) * TOP3_GAP + 24
-    others_h       = (len(others) * OTHER_ROW_H + 72) if others else 0
+    others_h       = (len(others) * OTHER_ROW_H + 116) if others else 0
     footer_h       = 56
     H = header_h + top3_h + others_h + footer_h
 
@@ -544,19 +544,32 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
 
         y += card_h + TOP3_GAP
 
-    # ── OTHER FINISHERS ───────────────────────────────────────────────────────
+    # ── OTHER FINISHERS TABLE ─────────────────────────────────────────────────
     if others:
+        COL_RANK   = PAD + 20
+        COL_PLAYER = PAD + 90
+        COL_PTS    = W - PAD - 20
+
+        HEADER_H   = 44
         oy = header_h + top3_h + 16
         glow_line(PAD, oy, W - PAD, oy, CYAN, radius=2)
         draw = ImageDraw.Draw(img)
         oy += 10
-        draw.text((W // 2, oy), "OTHER FINISHERS", fill=(*GRAY, 255), font=fnt["sec_hdr"], anchor="mt")
-        oy += 34
 
-        box_h = len(others) * OTHER_ROW_H + 6
+        # Table header row
+        box_h = HEADER_H + len(others) * OTHER_ROW_H + 6
         bracket_card(PAD, oy - 4, W - PAD, oy + box_h, CYAN, bl=20, bw=1)
-
         draw = ImageDraw.Draw(img)
+
+        draw.text((COL_RANK,   oy + 10), "#",      fill=(*CYAN, 200), font=fnt["sec_hdr"])
+        draw.text((COL_PLAYER, oy + 10), "PLAYER", fill=(*CYAN, 200), font=fnt["sec_hdr"])
+        draw.text((COL_PTS,    oy + 10), "PTS",    fill=(*CYAN, 200), font=fnt["sec_hdr"], anchor="rm")
+
+        # Header underline
+        oy += HEADER_H
+        draw.line([(PAD + 10, oy - 4), (W - PAD - 10, oy - 4)], fill=(*CYAN, 80), width=1)
+
+        # Rows
         for idx, p in enumerate(others):
             rank  = idx + 3
             place = idx + 4
@@ -569,9 +582,9 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
                 draw.rectangle([(PAD + 2, ry + 1), (W - PAD - 2, ry + OTHER_ROW_H - 2)],
                                fill=(10, 18, 38))
 
-            draw.text((PAD + 20,     ry + 14), f"#{place}",           fill=(*GRAY,  255), font=fnt["name_rest"])
-            draw.text((PAD + 80,     ry + 14), p["user"],             fill=(*WHITE, 255), font=fnt["name_rest"])
-            draw.text((W - PAD - 20, ry + 14), f"{p['points']} pts", fill=(*pc,    255), font=fnt["pts_rest"], anchor="rm")
+            draw.text((COL_RANK,   ry + 14), f"#{place}",          fill=(*GRAY,  255), font=fnt["name_rest"])
+            draw.text((COL_PLAYER, ry + 14), p["user"],            fill=(*WHITE, 255), font=fnt["name_rest"])
+            draw.text((COL_PTS,    ry + 14), str(p["points"]),     fill=(*pc,    255), font=fnt["pts_rest"], anchor="rm")
 
     # ── FOOTER ────────────────────────────────────────────────────────────────
     fy = H - footer_h
