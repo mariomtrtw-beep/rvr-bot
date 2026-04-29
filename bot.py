@@ -329,6 +329,52 @@ async def remove_time(ctx, member: discord.Member, *, track_name: str):
     await ctx.send(f"✅ Removed {member.name}'s time from `{track_name}`.")
     await update_leaderboard(ctx.guild)
 
+@bot.command(name="previewmonth")
+@commands.has_permissions(manage_guild=True)
+async def preview_month(ctx):
+    """Preview what the monthly results will look like without closing the cycle."""
+    cycle    = await get_current_cycle()
+    all_data = await get_all_data(cycle)
+
+    player_points = {}
+    for track, entries in all_data.items():
+        for i, entry in enumerate(entries):
+            pts = POINTS[i] if i < len(POINTS) else 0
+            uid = entry["uid"]
+            if uid not in player_points:
+                player_points[uid] = {"user": entry["user"], "uid": uid, "points": 0}
+            player_points[uid]["points"] += pts
+
+    ranked = sorted(player_points.values(), key=lambda x: x["points"], reverse=True)
+    medals = ["🥇", "🥈", "🥉"]
+
+    if ranked:
+        winner         = ranked[0]
+        winner_mention = f"<@{winner['uid']}>"
+        standings_text = ""
+        for i, p in enumerate(ranked):
+            medal = medals[i] if i < 3 else f"`#{i+1}`"
+            standings_text += f"{medal} <@{p['uid']}> — **{p['points']} pts**\n"
+    else:
+        winner_mention = "nobody (no times submitted!)"
+        standings_text = "*No times were submitted this month.*"
+
+    embed = discord.Embed(
+        title=f"👀 PREVIEW — {cycle} Monthly Results",
+        description=(
+            f"*This is a preview only — nothing has been closed.*\n\n"
+            f"👑 **Winner: {winner_mention}**\n\n"
+            f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+            f"**FINAL STANDINGS**\n"
+            f"{standings_text}"
+            f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬"
+        ),
+        color=0x888888,
+        timestamp=datetime.now(timezone.utc)
+    )
+    embed.set_footer(text="RVR Underground • Preview only — use !closemonth to finalize")
+    await ctx.send(embed=embed)
+
 @bot.command(name="closemonth")
 @commands.has_permissions(manage_guild=True)
 async def close_month(ctx):
@@ -430,6 +476,7 @@ async def rvr_help(ctx):
     embed.add_field(name="!mystats",              value="Show your personal stats for the current month", inline=False)
     embed.add_field(name="!tracks",               value="List all tracks with times this month", inline=False)
     embed.add_field(name="── Admin only ──",      value="\u200b", inline=False)
+    embed.add_field(name="!previewmonth",                value="Preview what this month's results will look like (no changes made)", inline=False)
     embed.add_field(name="!closemonth",                  value="Close the current monthly cycle, post results to #monthly-results, and start a new cycle", inline=False)
     embed.add_field(name="!removetrack <track>",         value="Remove a track and all its times (current cycle)", inline=False)
     embed.add_field(name="!removetime @player <track>",  value="Remove a player's time from a track (current cycle)", inline=False)
