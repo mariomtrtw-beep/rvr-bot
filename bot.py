@@ -370,54 +370,84 @@ def pts_color(rank: int, total: int) -> tuple:
     return tuple(int(GREEN[i] + s * (YELLOW[i] - GREEN[i])) for i in range(3))
 
 def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
+    import random
     W   = 1000
     PAD = 44
 
-    BG_TOP  = (8,   10,  22)
-    BG_BOT  = (16,   6,  32)
-    CYAN    = (0,  207, 255)
-    GOLD    = (255, 215,   0)
-    SILVER  = (200, 210, 220)
-    BRONZE  = (205, 127,  50)
+    BG_TOP  = (2,    8,  22)
+    BG_BOT  = (5,    3,  26)
+    CYAN    = (0,  200, 255)
+    GOLD    = (255, 200,   0)
+    SILVER  = (140, 190, 240)
+    BRONZE  = (190, 105,  40)
     WHITE   = (255, 255, 255)
-    GRAY    = (110, 120, 138)
-    CARD_BG = (18,  22,  38, 235)
-    DIV     = (38,  46,  60)
+    GRAY    = (80,  105, 140)
+    CARD_BG = (5,   12,  28)
+    DIV     = (28,  48,  78)
 
     fnt = {
         "title":     _load_font(True,  72),
-        "sub":       _load_font(False, 22),
-        "place_lbl": _load_font(True,  20),
+        "sub":       _load_font(False, 21),
+        "place_lbl": _load_font(True,  19),
         "name_top3": _load_font(True,  46),
         "pts_top3":  _load_font(True,  42),
         "name_rest": _load_font(True,  30),
         "pts_rest":  _load_font(True,  28),
-        "sec_hdr":   _load_font(True,  18),
-        "ftr":       _load_font(False, 16),
+        "sec_hdr":   _load_font(True,  17),
+        "ftr":       _load_font(False, 15),
     }
 
-    total    = len(ranked)
-    top3     = ranked[:3]
-    others   = ranked[3:]
-
-    TOP3_CARD_H = 104
+    total       = len(ranked)
+    top3        = ranked[:3]
+    others      = ranked[3:]
+    TOP3_CARD_H = 106
     TOP3_GAP    = 10
     OTHER_ROW_H = 58
-    header_h    = 148
+    header_h    = 150
     top3_h      = len(top3) * TOP3_CARD_H + (len(top3) - 1) * TOP3_GAP + 24
-    div_h       = 58
-    others_h    = (len(others) * OTHER_ROW_H + 10) if others else 0
+    others_h    = (len(others) * OTHER_ROW_H + 72) if others else 0
     footer_h    = 56
-    H = header_h + top3_h + div_h + others_h + footer_h
+    H = header_h + top3_h + others_h + footer_h
 
+    # ── Base + gradient ───────────────────────────────────────────────────────
     img = Image.new("RGBA", (W, H), (*BG_TOP, 255))
-
-    # Gradient background
     draw = ImageDraw.Draw(img)
     for y in range(H):
         t = y / H
         c = tuple(int(BG_TOP[i] + t * (BG_BOT[i] - BG_TOP[i])) for i in range(3))
         draw.line([(0, y), (W - 1, y)], fill=(*c, 255))
+
+    # ── Circuit board traces ──────────────────────────────────────────────────
+    rng     = random.Random(1337)
+    GRID    = 50
+    circuit = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    cdraw   = ImageDraw.Draw(circuit)
+    grid    = {}
+    for col in range(W // GRID + 2):
+        for row in range(H // GRID + 2):
+            if rng.random() < 0.58:
+                grid[(col, row)] = (
+                    col * GRID + rng.randint(-6, 6),
+                    row * GRID + rng.randint(-6, 6),
+                )
+    for (col, row), (x, y) in grid.items():
+        if (col + 1, row) in grid and rng.random() < 0.40:
+            nx, ny = grid[(col + 1, row)]
+            cdraw.line([(x, y), (nx, ny)], fill=(0, 70, 160, 20), width=1)
+        if (col, row + 1) in grid and rng.random() < 0.40:
+            nx, ny = grid[(col, row + 1)]
+            cdraw.line([(x, y), (nx, ny)], fill=(0, 70, 160, 20), width=1)
+        if rng.random() < 0.20:
+            r = rng.randint(1, 3)
+            cdraw.ellipse([(x - r, y - r), (x + r, y + r)], fill=(0, 140, 220, 35))
+    img = Image.alpha_composite(img, circuit)
+
+    # ── Scanlines ─────────────────────────────────────────────────────────────
+    scan  = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    sdraw = ImageDraw.Draw(scan)
+    for sy in range(0, H, 3):
+        sdraw.line([(0, sy), (W, sy)], fill=(0, 0, 0, 7), width=1)
+    img = Image.alpha_composite(img, scan)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
     def glow_text(text, pos, font, color, radius=16, anchor="mt"):
@@ -429,32 +459,42 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
         img = Image.alpha_composite(img, gl)
         ImageDraw.Draw(img).text(pos, text, fill=(*color[:3], 255), font=font, anchor=anchor)
 
-    def glow_card(x1, y1, x2, y2, color, glow_r=14):
+    def glow_line(x1, y1, x2, y2, color, width=1, radius=4):
         nonlocal img
         gl = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        ImageDraw.Draw(gl).rounded_rectangle(
-            (x1, y1, x2, y2), radius=10, outline=(*color[:3], 140), width=4
-        )
-        gl = gl.filter(ImageFilter.GaussianBlur(glow_r))
+        ImageDraw.Draw(gl).line([(x1, y1), (x2, y2)], fill=(*color[:3], 200), width=width + 2)
+        gl = gl.filter(ImageFilter.GaussianBlur(radius))
+        img = Image.alpha_composite(img, gl)
+        ImageDraw.Draw(img).line([(x1, y1), (x2, y2)], fill=(*color[:3], 255), width=width)
+
+    def bracket_card(x1, y1, x2, y2, color, bl=28, bw=2):
+        nonlocal img
+        gl = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        gd = ImageDraw.Draw(gl)
+        corners = [
+            [(x1, y1 + bl), (x1, y1), (x1 + bl, y1)],
+            [(x2 - bl, y1), (x2, y1), (x2, y1 + bl)],
+            [(x1, y2 - bl), (x1, y2), (x1 + bl, y2)],
+            [(x2 - bl, y2), (x2, y2), (x2, y2 - bl)],
+        ]
+        for pts in corners:
+            gd.line(pts, fill=(*color[:3], 150), width=bw + 3)
+        gl = gl.filter(ImageFilter.GaussianBlur(9))
         img = Image.alpha_composite(img, gl)
         img = Image.alpha_composite(img, gl)
-        ImageDraw.Draw(img).rounded_rectangle(
-            (x1, y1, x2, y2), radius=10, fill=CARD_BG, outline=(*color[:3], 255), width=2
-        )
+        d = ImageDraw.Draw(img)
+        d.rectangle([(x1 + 1, y1 + 1), (x2 - 1, y2 - 1)], fill=CARD_BG)
+        for pts in corners:
+            d.line(pts, fill=(*color[:3], 255), width=bw)
 
     # ── HEADER ────────────────────────────────────────────────────────────────
-    draw = ImageDraw.Draw(img)
-    draw.line([(PAD, 18), (W - PAD, 18)], fill=(*CYAN, 50), width=1)
-
+    glow_line(PAD, 28, W // 2 - 220, 28, CYAN, radius=3)
+    glow_line(W // 2 + 220, 28, W - PAD, 28, CYAN, radius=3)
     glow_text("RVR UNDERGROUND", (W // 2, 26), fnt["title"], CYAN, radius=22)
-
     draw = ImageDraw.Draw(img)
-    draw.text(
-        (W // 2, 112),
-        f"★   {cycle.upper()} MONTHLY CHAMPIONSHIP   ★",
-        fill=(*WHITE, 185), font=fnt["sub"], anchor="mt"
-    )
-    draw.line([(PAD, 144), (W - PAD, 144)], fill=(*CYAN, 110), width=1)
+    draw.text((W // 2, 112), f"//  {cycle.upper()} MONTHLY CHAMPIONSHIP  //",
+              fill=(*WHITE, 165), font=fnt["sub"], anchor="mt")
+    glow_line(PAD, 144, W - PAD, 144, CYAN, radius=3)
 
     # ── TOP 3 CARDS ───────────────────────────────────────────────────────────
     podium_colors = [GOLD, SILVER, BRONZE]
@@ -466,45 +506,51 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
         pc    = pts_color(i, total)
         x1, y1, x2, y2 = PAD, y, W - PAD, y + TOP3_CARD_H
 
-        glow_card(x1, y1, x2, y2, color, glow_r=16 if i == 0 else 10)
+        bracket_card(x1, y1, x2, y2, color, bl=30, bw=2)
 
         draw = ImageDraw.Draw(img)
-        # Left color stripe
-        draw.rounded_rectangle((x1, y1, x1 + 10, y2), radius=10, fill=(*color, 255))
-        # Place label
-        draw.text((x1 + 26, y1 + 12), podium_labels[i], fill=(*color, 255), font=fnt["place_lbl"])
-        # Player name
-        draw.text((x1 + 26, y1 + 38), p["user"], fill=(*WHITE, 255), font=fnt["name_top3"])
-        # Points (right side, colored)
-        draw.text((x2 - 20, y1 + TOP3_CARD_H // 2), f"{p['points']} pts",
-                  fill=(*pc, 255), font=fnt["pts_top3"], anchor="rm")
+        draw.rectangle([(x1 + 1, y1 + 1), (x1 + 10, y2 - 1)], fill=(*color, 255))
+        draw.text((x1 + 26, y1 + 10), podium_labels[i], fill=(*color, 255), font=fnt["place_lbl"])
+        draw.text((x1 + 26, y1 + 36), p["user"],        fill=(*WHITE, 255), font=fnt["name_top3"])
+        draw.text((x2 - 20, y1 + TOP3_CARD_H // 2),
+                  f"{p['points']} pts", fill=(*pc, 255), font=fnt["pts_top3"], anchor="rm")
 
         y += TOP3_CARD_H + TOP3_GAP
 
     # ── OTHER FINISHERS ───────────────────────────────────────────────────────
-    y = header_h + top3_h + 18
     if others:
+        oy = header_h + top3_h + 16
+        glow_line(PAD, oy, W - PAD, oy, CYAN, radius=2)
         draw = ImageDraw.Draw(img)
-        draw.line([(PAD, y), (W - PAD, y)], fill=(*DIV, 255), width=1)
-        y += 10
-        draw.text((W // 2, y), "OTHER FINISHERS", fill=(*GRAY, 255), font=fnt["sec_hdr"], anchor="mt")
-        y += 36
+        oy += 10
+        draw.text((W // 2, oy), "OTHER FINISHERS", fill=(*GRAY, 255), font=fnt["sec_hdr"], anchor="mt")
+        oy += 34
 
-        for i, p in enumerate(others, start=3):
-            rank = i  # 0-indexed overall rank
-            pc = pts_color(rank, total)
-            if i % 2 == 1:
-                draw.rectangle([(PAD, y), (W - PAD, y + OTHER_ROW_H - 2)], fill=(22, 27, 42, 255))
-            draw.text((PAD + 14,      y + 14), f"#{rank + 1}",         fill=(*GRAY,  255), font=fnt["name_rest"])
-            draw.text((PAD + 72,      y + 14), p["user"],              fill=(*WHITE, 255), font=fnt["name_rest"])
-            draw.text((W - PAD - 14, y + 14), f"{p['points']} pts",   fill=(*pc,    255), font=fnt["pts_rest"], anchor="rm")
-            y += OTHER_ROW_H
+        box_h = len(others) * OTHER_ROW_H + 6
+        bracket_card(PAD, oy - 4, W - PAD, oy + box_h, CYAN, bl=20, bw=1)
+
+        draw = ImageDraw.Draw(img)
+        for idx, p in enumerate(others):
+            rank  = idx + 3
+            place = idx + 4
+            pc    = pts_color(rank, total)
+            ry    = oy + idx * OTHER_ROW_H
+
+            if idx > 0:
+                draw.line([(PAD + 14, ry), (W - PAD - 14, ry)], fill=(*DIV, 255), width=1)
+            if idx % 2 == 1:
+                draw.rectangle([(PAD + 2, ry + 1), (W - PAD - 2, ry + OTHER_ROW_H - 2)],
+                               fill=(10, 18, 38))
+
+            draw.text((PAD + 20,     ry + 14), f"#{place}",           fill=(*GRAY,  255), font=fnt["name_rest"])
+            draw.text((PAD + 80,     ry + 14), p["user"],             fill=(*WHITE, 255), font=fnt["name_rest"])
+            draw.text((W - PAD - 20, ry + 14), f"{p['points']} pts", fill=(*pc,    255), font=fnt["pts_rest"], anchor="rm")
 
     # ── FOOTER ────────────────────────────────────────────────────────────────
     fy = H - footer_h
+    glow_line(PAD, fy + 6, W - PAD, fy + 6, CYAN, radius=2)
     draw = ImageDraw.Draw(img)
-    draw.line([(PAD, fy + 6), (W - PAD, fy + 6)], fill=(*CYAN, 90), width=1)
-    draw.text((W // 2, fy + 20), "RVR Underground  •  Times are best laps",
+    draw.text((W // 2, fy + 20), "RVR Underground  //  Times are best laps",
               fill=(*GRAY, 255), font=fnt["ftr"], anchor="mt")
 
     buf = io.BytesIO()
