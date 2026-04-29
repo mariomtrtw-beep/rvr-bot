@@ -417,6 +417,11 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
     except Exception:
         pass
 
+    COL_RANK       = PAD + 20
+    COL_PLAYER     = PAD + 110
+    COL_PTS        = W - PAD - 20
+    TABLE_HDR_H    = 52
+
     total          = len(ranked)
     top3           = ranked[:3]
     others         = ranked[3:]
@@ -425,9 +430,9 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
     OTHER_ROW_H    = 66
     subtitle_h     = 48
     header_h       = banner_h + subtitle_h + 16
-    top3_h         = sum(TOP3_CARD_H[:len(top3)]) + (len(top3) - 1) * TOP3_GAP + 24
-    others_h       = (len(others) * OTHER_ROW_H + 116) if others else 0
-    footer_h       = 56
+    top3_h         = TABLE_HDR_H + sum(TOP3_CARD_H[:len(top3)]) + (len(top3) - 1) * TOP3_GAP + 16
+    others_h       = (len(others) * OTHER_ROW_H + 30) if others else 0
+    footer_h       = 24
     H = header_h + top3_h + others_h + footer_h
 
     # ── Base + gradient ───────────────────────────────────────────────────────
@@ -522,11 +527,19 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
               fill=(*WHITE, 165), font=fnt["sub"], anchor="mt")
     glow_line(PAD, sub_y + 30, W - PAD, sub_y + 30, CYAN, radius=3)
 
-    # ── TOP 3 CARDS ───────────────────────────────────────────────────────────
+    # ── GLOBAL TABLE HEADER ───────────────────────────────────────────────────
     podium_colors = [GOLD, SILVER, BRONZE]
     podium_labels = ["1ST PLACE", "2ND PLACE", "3RD PLACE"]
 
-    y = header_h + 14
+    ty = header_h + 10
+    draw = ImageDraw.Draw(img)
+    draw.text((COL_RANK,   ty + 8), "#",      fill=(*CYAN, 210), font=fnt["sec_hdr"])
+    draw.text((COL_PLAYER, ty + 8), "PLAYER", fill=(*CYAN, 210), font=fnt["sec_hdr"])
+    draw.text((COL_PTS,    ty + 8), "PTS",    fill=(*CYAN, 210), font=fnt["sec_hdr"], anchor="rm")
+    glow_line(PAD, ty + TABLE_HDR_H - 4, W - PAD, ty + TABLE_HDR_H - 4, CYAN, radius=2)
+
+    # ── TOP 3 CARDS ───────────────────────────────────────────────────────────
+    y = header_h + TABLE_HDR_H + 14
     for i, p in enumerate(top3):
         color  = podium_colors[i]
         pc     = pts_color(i, total)
@@ -536,40 +549,28 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
         bracket_card(x1, y1, x2, y2, color, bl=30, bw=2)
 
         draw = ImageDraw.Draw(img)
-        draw.rectangle([(x1 + 1, y1 + 1), (x1 + 10, y2 - 1)], fill=(*color, 255))
-        draw.text((x1 + 26, y1 + 10), podium_labels[i], fill=(*color, 255), font=fnt["place_lbl"])
-        draw.text((x1 + 26, y1 + 46), p["user"],        fill=(*WHITE, 255), font=fnt["name_top3"])
-        draw.text((x2 - 20, y1 + card_h // 2),
-                  f"{p['points']} pts", fill=(*pc, 255), font=fnt["pts_top3"], anchor="rm")
+        # Rank number aligned to # column
+        draw.text((COL_RANK,      y1 + card_h // 2 - 20), f"#{i+1}", fill=(*color, 255), font=fnt["pts_top3"], anchor="lm")
+        # Place label small, above name
+        draw.text((COL_PLAYER,    y1 + 12), podium_labels[i],  fill=(*color, 200), font=fnt["place_lbl"])
+        # Player name
+        draw.text((COL_PLAYER,    y1 + 48), p["user"],         fill=(*WHITE, 255), font=fnt["name_top3"])
+        # Points right-aligned to PTS column, just number
+        draw.text((COL_PTS,       y1 + card_h // 2), str(p["points"]), fill=(*pc, 255), font=fnt["pts_top3"], anchor="rm")
 
         y += card_h + TOP3_GAP
 
-    # ── OTHER FINISHERS TABLE ─────────────────────────────────────────────────
+    # ── OTHER FINISHERS ───────────────────────────────────────────────────────
     if others:
-        COL_RANK   = PAD + 20
-        COL_PLAYER = PAD + 90
-        COL_PTS    = W - PAD - 20
-
-        HEADER_H   = 44
-        oy = header_h + top3_h + 16
+        oy = header_h + top3_h + 10
         glow_line(PAD, oy, W - PAD, oy, CYAN, radius=2)
         draw = ImageDraw.Draw(img)
-        oy += 10
+        oy += 20
 
-        # Table header row
-        box_h = HEADER_H + len(others) * OTHER_ROW_H + 6
+        box_h = len(others) * OTHER_ROW_H + 6
         bracket_card(PAD, oy - 4, W - PAD, oy + box_h, CYAN, bl=20, bw=1)
         draw = ImageDraw.Draw(img)
 
-        draw.text((COL_RANK,   oy + 10), "#",      fill=(*CYAN, 200), font=fnt["sec_hdr"])
-        draw.text((COL_PLAYER, oy + 10), "PLAYER", fill=(*CYAN, 200), font=fnt["sec_hdr"])
-        draw.text((COL_PTS,    oy + 10), "PTS",    fill=(*CYAN, 200), font=fnt["sec_hdr"], anchor="rm")
-
-        # Header underline
-        oy += HEADER_H
-        draw.line([(PAD + 10, oy - 4), (W - PAD - 10, oy - 4)], fill=(*CYAN, 80), width=1)
-
-        # Rows
         for idx, p in enumerate(others):
             rank  = idx + 3
             place = idx + 4
@@ -582,16 +583,12 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
                 draw.rectangle([(PAD + 2, ry + 1), (W - PAD - 2, ry + OTHER_ROW_H - 2)],
                                fill=(10, 18, 38))
 
-            draw.text((COL_RANK,   ry + 14), f"#{place}",          fill=(*GRAY,  255), font=fnt["name_rest"])
-            draw.text((COL_PLAYER, ry + 14), p["user"],            fill=(*WHITE, 255), font=fnt["name_rest"])
-            draw.text((COL_PTS,    ry + 14), str(p["points"]),     fill=(*pc,    255), font=fnt["pts_rest"], anchor="rm")
+            draw.text((COL_RANK,   ry + 16), f"#{place}",      fill=(*GRAY,  255), font=fnt["name_rest"])
+            draw.text((COL_PLAYER, ry + 16), p["user"],        fill=(*WHITE, 255), font=fnt["name_rest"])
+            draw.text((COL_PTS,    ry + 16), str(p["points"]), fill=(*pc,    255), font=fnt["pts_rest"], anchor="rm")
 
     # ── FOOTER ────────────────────────────────────────────────────────────────
-    fy = H - footer_h
-    glow_line(PAD, fy + 6, W - PAD, fy + 6, CYAN, radius=2)
-    draw = ImageDraw.Draw(img)
-    draw.text((W // 2, fy + 20), "RVR Underground  //  Times are best laps",
-              fill=(*GRAY, 255), font=fnt["ftr"], anchor="mt")
+    glow_line(PAD, H - 14, W - PAD, H - 14, CYAN, radius=2)
 
     buf = io.BytesIO()
     img.convert("RGB").save(buf, format="PNG")
