@@ -3,8 +3,10 @@ from discord.ext import commands
 import os
 import re
 import asyncio
+import io
 from datetime import datetime, timezone
 from motor.motor_asyncio import AsyncIOMotorClient
+from PIL import Image, ImageDraw, ImageFont
 
 # ── Config ────────────────────────────────────────────────────────────────────
 TOKEN     = os.environ["DISCORD_TOKEN"]
@@ -329,6 +331,106 @@ async def remove_time(ctx, member: discord.Member, *, track_name: str):
     await ctx.send(f"✅ Removed {member.name}'s time from `{track_name}`.")
     await update_leaderboard(ctx.guild)
 
+# ── Image generation ──────────────────────────────────────────────────────────
+_FONT_BOLD    = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+_FONT_REGULAR = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+
+def _fonts(sizes: dict) -> dict:
+    out = {}
+    for key, size in sizes.items():
+        path = _FONT_BOLD if "bold" in key else _FONT_REGULAR
+        try:
+            out[key] = ImageFont.truetype(path, size)
+        except OSError:
+            out[key] = ImageFont.load_default()
+    return out
+
+def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
+    W   = 780
+    PAD = 30
+
+    BG         = (13,  17,  23)
+    CARD_BG    = (22,  27,  34)
+    ACCENT     = (0,   207, 255)
+    GOLD       = (255, 215, 0)
+    SILVER     = (192, 192, 192)
+    BRONZE     = (205, 127, 50)
+    WHITE      = (255, 255, 255)
+    GRAY       = (139, 148, 158)
+    DIVIDER    = (48,  54,  61)
+
+    f = _fonts({
+        "bold_title":  38,
+        "regular_sub": 17,
+        "bold_month":  28,
+        "regular_lbl": 14,
+        "bold_name":   22,
+        "bold_pts":    22,
+        "regular_row": 17,
+        "regular_ftr": 13,
+    })
+
+    header_h = 88
+    month_h  = 52
+    podium_h = min(3, len(ranked)) * 76
+    others_h = (max(0, len(ranked) - 3) * 36 + 40) if len(ranked) > 3 else 0
+    footer_h = 48
+    H = header_h + month_h + podium_h + others_h + footer_h + 10
+
+    img  = Image.new("RGB", (W, H), BG)
+    draw = ImageDraw.Draw(img)
+
+    # Header
+    draw.rectangle([0, 0, W, header_h - 8], fill=CARD_BG)
+    draw.text((W // 2, 16), "RVR UNDERGROUND", fill=ACCENT, font=f["bold_title"],  anchor="mt")
+    draw.text((W // 2, 60), "MONTHLY RESULTS",  fill=GRAY,   font=f["regular_sub"], anchor="mt")
+
+    # Month
+    y = header_h
+    draw.text((W // 2, y + 8), cycle.upper(), fill=WHITE, font=f["bold_month"], anchor="mt")
+    draw.line([(PAD, y + 44), (W - PAD, y + 44)], fill=ACCENT, width=2)
+
+    # Podium cards
+    y = header_h + month_h
+    podium_colors = [GOLD, SILVER, BRONZE]
+    podium_labels = ["1ST PLACE", "2ND PLACE", "3RD PLACE"]
+
+    for i in range(min(3, len(ranked))):
+        p     = ranked[i]
+        color = podium_colors[i]
+        y1, y2 = y, y + 68
+
+        draw.rounded_rectangle([PAD,      y1, W - PAD, y2], radius=6, fill=CARD_BG)
+        draw.rounded_rectangle([PAD,      y1, PAD + 8, y2], radius=6, fill=color)
+        draw.text((PAD + 20, y1 + 9),  podium_labels[i],  fill=color, font=f["regular_lbl"])
+        draw.text((PAD + 20, y1 + 30), p["user"],          fill=WHITE, font=f["bold_name"])
+        draw.text((W - PAD - 10, y1 + 32), f"{p['points']} pts", fill=color, font=f["bold_pts"], anchor="rm")
+        y += 76
+
+    # Other finishers
+    if len(ranked) > 3:
+        y += 6
+        draw.line([(PAD, y), (W - PAD, y)], fill=DIVIDER, width=1)
+        y += 10
+        draw.text((W // 2, y), "OTHER FINISHERS", fill=GRAY, font=f["regular_lbl"], anchor="mt")
+        y += 26
+        for i, p in enumerate(ranked[3:], start=4):
+            draw.text((PAD + 10,      y), f"#{i}",          fill=GRAY,  font=f["regular_row"])
+            draw.text((PAD + 48,      y), p["user"],         fill=WHITE, font=f["regular_row"])
+            draw.text((W - PAD - 10, y), f"{p['points']} pts", fill=GRAY, font=f["regular_row"], anchor="rm")
+            y += 36
+
+    # Footer
+    fy = H - footer_h
+    draw.line([(PAD, fy + 4), (W - PAD, fy + 4)], fill=ACCENT, width=1)
+    draw.text((W // 2, fy + 18), "RVR Underground  •  Times are best laps", fill=GRAY, font=f["regular_ftr"], anchor="mt")
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
+
+
 def build_standings(ranked: list, mention: bool) -> tuple[str, str, str]:
     """Returns (podium_text, rest_text, winner_str) for use in embeds."""
     podium_labels = ["🥇 FIRST PLACE", "🥈 SECOND PLACE", "🥉 THIRD PLACE"]
@@ -369,37 +471,15 @@ async def preview_month(ctx):
 
     ranked = sorted(player_points.values(), key=lambda x: x["points"], reverse=True)
 
-    if ranked:
-        podium_text, rest_text, winner_str = build_standings(ranked, mention=False)
-        standings_section = (
-            f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-            f"🏆 **PODIUM**\n\n"
-            f"{podium_text}"
-        )
-        if rest_text:
-            standings_section += (
-                f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-                f"**OTHER FINISHERS**\n"
-                f"{rest_text}"
-            )
-        standings_section += "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬"
-    else:
-        winner_str        = "nobody (no times submitted!)"
-        standings_section = "*No times were submitted this month.*"
+    if not ranked:
+        await ctx.send("No times submitted this month yet.")
+        return
 
-    embed = discord.Embed(
-        title=f"👀 PREVIEW — {cycle} Monthly Results",
-        description=(
-            f"*This is a preview only — nothing has been closed.*\n\n"
-            f"👑 **This month's winner: {winner_str}**\n\n"
-            f"{standings_section}"
-        ),
-        color=0x888888,
-        timestamp=datetime.now(timezone.utc)
+    img_buf = generate_results_image(cycle, ranked)
+    await ctx.send(
+        content="👀 **PREVIEW** — nothing has been closed yet.",
+        file=discord.File(img_buf, filename="preview.png")
     )
-    embed.set_image(url=BANNER)
-    embed.set_footer(text="RVR Underground • Preview only — use !closemonth to finalize")
-    await ctx.send(embed=embed)
 
 
 @bot.command(name="closemonth")
@@ -424,39 +504,7 @@ async def close_month(ctx):
         await ctx.send(f"❌ Channel `#{MONTHLY_RESULTS_CHANNEL}` not found. Please create it first.")
         return
 
-    if ranked:
-        podium_text, rest_text, winner_str = build_standings(ranked, mention=True)
-        standings_section = (
-            f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-            f"🏆 **PODIUM**\n\n"
-            f"{podium_text}"
-        )
-        if rest_text:
-            standings_section += (
-                f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-                f"**OTHER FINISHERS**\n"
-                f"{rest_text}"
-            )
-        standings_section += "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬"
-    else:
-        winner_str        = "nobody (no times submitted!)"
-        standings_section = "*No times were submitted this month.*"
-
-    # Announcement embed
-    announce_embed = discord.Embed(
-        title=f"🏁 {cycle} — The Race Is Over!",
-        description=(
-            f"Another month of racing has come to an end!\n"
-            f"Here are **{cycle}'s** final results:\n\n"
-            f"👑 **WINNER: {winner_str}** 👑\n"
-            f"*Congratulations — you are this month's champion!*\n\n"
-            f"{standings_section}"
-        ),
-        color=0xFFD700,
-        timestamp=datetime.now(timezone.utc)
-    )
-    announce_embed.set_image(url=BANNER)
-    announce_embed.set_footer(text="RVR Underground • Monthly Cycle Closed")
+    winner_mention = f"<@{ranked[0]['uid']}>" if ranked else "nobody"
 
     # Track breakdown embed
     tracks_text = ""
@@ -478,7 +526,16 @@ async def close_month(ctx):
     months_role = discord.utils.get(ctx.guild.roles, name="Months")
     if months_role:
         await results_ch.send(months_role.mention)
-    await results_ch.send(embed=announce_embed)
+
+    if ranked:
+        img_buf = generate_results_image(cycle, ranked)
+        await results_ch.send(
+            content=f"🏁 **{cycle} — The Race Is Over!**\n👑 **Winner: {winner_mention}** — congratulations!",
+            file=discord.File(img_buf, filename="results.png")
+        )
+    else:
+        await results_ch.send(f"🏁 **{cycle}** has ended — no times were submitted this month.")
+
     if tracks_text:
         await results_ch.send(embed=tracks_embed)
 
