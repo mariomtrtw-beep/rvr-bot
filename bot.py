@@ -557,23 +557,33 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
         draw.text((COL_PLAYER,    y1 + 12), podium_labels[i],  fill=(*color, 200), font=fnt["place_lbl"])
         # Player name
         draw.text((COL_PLAYER,    y1 + 48), p["user"],         fill=(*WHITE, 255), font=fnt["name_top3"])
-        # Medal circle after name
-        name_w   = draw.textlength(p["user"], font=fnt["name_top3"])
-        medal_r  = 18 if i == 0 else 14
-        medal_cx = int(COL_PLAYER + name_w + 14 + medal_r)
-        medal_cy = y1 + 48 + fnt["name_top3"].size // 2
+        # Medal shape (clasp bar on top + disc with rank number) after name
+        name_w    = draw.textlength(p["user"], font=fnt["name_top3"])
+        disc_r    = 20 if i == 0 else 16
+        clasp_w   = 12
+        clasp_h   = 9
+        medal_cx  = int(COL_PLAYER + name_w + 18 + disc_r)
+        name_mid  = y1 + 48 + fnt["name_top3"].size // 2
+        disc_cy   = name_mid + 4
+        clasp_x1  = medal_cx - clasp_w // 2
+        clasp_y1  = disc_cy - disc_r - clasp_h - 1
+        clasp_x2  = medal_cx + clasp_w // 2
+        clasp_y2  = disc_cy - disc_r + 2
+        # Glow layer
         gl = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        ImageDraw.Draw(gl).ellipse(
-            [(medal_cx - medal_r, medal_cy - medal_r), (medal_cx + medal_r, medal_cy + medal_r)],
-            fill=(*color[:3], 180)
-        )
-        gl = gl.filter(ImageFilter.GaussianBlur(8))
+        gd = ImageDraw.Draw(gl)
+        gd.rectangle([(clasp_x1, clasp_y1), (clasp_x2, clasp_y2)], fill=(*color[:3], 160))
+        gd.ellipse([(medal_cx - disc_r, disc_cy - disc_r), (medal_cx + disc_r, disc_cy + disc_r)], fill=(*color[:3], 160))
+        gl = gl.filter(ImageFilter.GaussianBlur(9))
         img = Image.alpha_composite(img, gl)
         draw = ImageDraw.Draw(img)
-        draw.ellipse(
-            [(medal_cx - medal_r, medal_cy - medal_r), (medal_cx + medal_r, medal_cy + medal_r)],
-            fill=(*color[:3], 255), outline=(*WHITE, 160), width=2
-        )
+        # Clasp bar
+        draw.rectangle([(clasp_x1, clasp_y1), (clasp_x2, clasp_y2)], fill=(*color[:3], 255))
+        # Disc
+        draw.ellipse([(medal_cx - disc_r, disc_cy - disc_r), (medal_cx + disc_r, disc_cy + disc_r)],
+                     fill=(*color[:3], 255), outline=(*WHITE, 160), width=2)
+        # Rank number inside disc
+        draw.text((medal_cx, disc_cy), str(i + 1), fill=(10, 10, 10, 255), font=fnt["place_lbl"], anchor="mm")
         # Points right-aligned to PTS column, just number
         draw.text((COL_PTS,       y1 + card_h // 2), str(p["points"]), fill=(*pc, 255), font=fnt["pts_top3"], anchor="rm")
 
