@@ -557,6 +557,23 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
         draw.text((COL_PLAYER,    y1 + 12), podium_labels[i],  fill=(*color, 200), font=fnt["place_lbl"])
         # Player name
         draw.text((COL_PLAYER,    y1 + 48), p["user"],         fill=(*WHITE, 255), font=fnt["name_top3"])
+        # Medal circle after name
+        name_w   = draw.textlength(p["user"], font=fnt["name_top3"])
+        medal_r  = 18 if i == 0 else 14
+        medal_cx = int(COL_PLAYER + name_w + 14 + medal_r)
+        medal_cy = y1 + 48 + fnt["name_top3"].size // 2
+        gl = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        ImageDraw.Draw(gl).ellipse(
+            [(medal_cx - medal_r, medal_cy - medal_r), (medal_cx + medal_r, medal_cy + medal_r)],
+            fill=(*color[:3], 180)
+        )
+        gl = gl.filter(ImageFilter.GaussianBlur(8))
+        img = Image.alpha_composite(img, gl)
+        draw = ImageDraw.Draw(img)
+        draw.ellipse(
+            [(medal_cx - medal_r, medal_cy - medal_r), (medal_cx + medal_r, medal_cy + medal_r)],
+            fill=(*color[:3], 255), outline=(*WHITE, 160), width=2
+        )
         # Points right-aligned to PTS column, just number
         draw.text((COL_PTS,       y1 + card_h // 2), str(p["points"]), fill=(*pc, 255), font=fnt["pts_top3"], anchor="rm")
 
