@@ -390,9 +390,9 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
         "sub":       _load_font(False, 24),
         "place_lbl": _load_font(True,  33),
         "name_top3": _load_font(True,  53),
-        "pts_top3":  _load_font(True,  48),
+        "pts_top3":  _load_font(True,  56),
         "name_rest": _load_font(True,  35),
-        "pts_rest":  _load_font(True,  33),
+        "pts_rest":  _load_font(True,  38),
         "sec_hdr":   _load_font(True,  30),
         "ftr":       _load_font(False, 17),
     }
@@ -572,10 +572,11 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
         draw = ImageDraw.Draw(img)
 
         for idx, p in enumerate(others):
-            rank  = idx + 3
-            place = idx + 4
-            pc    = pts_color(rank, total)
-            ry    = oy + idx * OTHER_ROW_H
+            rank   = idx + 3
+            place  = idx + 4
+            pc     = pts_color(rank, total)
+            ry     = oy + idx * OTHER_ROW_H
+            mid_y  = ry + OTHER_ROW_H // 2
 
             if idx > 0:
                 draw.line([(PAD + 14, ry), (W - PAD - 14, ry)], fill=(*DIV, 255), width=1)
@@ -583,9 +584,9 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
                 draw.rectangle([(PAD + 2, ry + 1), (W - PAD - 2, ry + OTHER_ROW_H - 2)],
                                fill=(10, 18, 38))
 
-            draw.text((COL_RANK,   ry + 16), f"#{place}",      fill=(*GRAY,  255), font=fnt["name_rest"])
-            draw.text((COL_PLAYER, ry + 16), p["user"],        fill=(*WHITE, 255), font=fnt["name_rest"])
-            draw.text((COL_PTS,    ry + 16), str(p["points"]), fill=(*pc,    255), font=fnt["pts_rest"], anchor="rm")
+            draw.text((COL_RANK,   mid_y), f"#{place}",      fill=(*GRAY,  255), font=fnt["name_rest"], anchor="lm")
+            draw.text((COL_PLAYER, mid_y), p["user"],        fill=(*WHITE, 255), font=fnt["name_rest"], anchor="lm")
+            draw.text((COL_PTS,    mid_y), str(p["points"]), fill=(*pc,    255), font=fnt["pts_rest"],  anchor="rm")
 
     # ── FOOTER ────────────────────────────────────────────────────────────────
     glow_line(PAD, H - 14, W - PAD, H - 14, CYAN, radius=2)
