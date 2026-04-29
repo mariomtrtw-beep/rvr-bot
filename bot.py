@@ -332,15 +332,17 @@ async def remove_time(ctx, member: discord.Member, *, track_name: str):
     await update_leaderboard(ctx.guild)
 
 # ── Image generation ──────────────────────────────────────────────────────────
+_FONT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 _BOLD_PATHS = [
+    os.path.join(_FONT_DIR, "Orbitron-Bold.ttf"),
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
-    "/usr/share/fonts/truetype/ttf-dejavu/DejaVuSans-Bold.ttf",
 ]
 _REG_PATHS = [
+    os.path.join(_FONT_DIR, "Orbitron-Regular.ttf"),
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/dejavu/DejaVuSans.ttf",
-    "/usr/share/fonts/truetype/ttf-dejavu/DejaVuSans.ttf",
 ]
 
 def _load_font(bold: bool, size: int):
