@@ -565,7 +565,8 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
         draw.text((COL_PLAYER,    y1 + 48), p["user"],         fill=(*name_tint, 255), font=fnt["name_top3"])
         # Shine highlight pass
         shine = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        ImageDraw.Draw(shine).text((COL_PLAYER, y1 + 46), p["user"], fill=(255, 255, 255, 90), font=fnt["name_top3"])
+        ImageDraw.Draw(shine).text((COL_PLAYER, y1 + 44), p["user"], fill=(255, 255, 255, 160), font=fnt["name_top3"])
+        shine = shine.filter(ImageFilter.GaussianBlur(2))
         img = Image.alpha_composite(img, shine)
         draw = ImageDraw.Draw(img)
         # Medal shape (clasp bar on top + disc with rank number) after name
@@ -840,7 +841,8 @@ def generate_leaderboard_image(cycle: str, ranked: list, rank_deltas: dict | Non
         draw.text((COL_PLAYER, y1 + 48), p["user"],        fill=(*name_tint, 255), font=fnt["name_top3"])
         # Shine highlight pass
         shine = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        ImageDraw.Draw(shine).text((COL_PLAYER, y1 + 46), p["user"], fill=(255, 255, 255, 90), font=fnt["name_top3"])
+        ImageDraw.Draw(shine).text((COL_PLAYER, y1 + 44), p["user"], fill=(255, 255, 255, 160), font=fnt["name_top3"])
+        shine = shine.filter(ImageFilter.GaussianBlur(2))
         img = Image.alpha_composite(img, shine)
         draw = ImageDraw.Draw(img)
         draw.text((COL_PTS,    mid_y),   str(p["points"]), fill=(*pc,        255), font=fnt["pts_top3"], anchor="rm")
