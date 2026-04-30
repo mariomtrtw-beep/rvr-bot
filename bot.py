@@ -969,12 +969,12 @@ async def preview_month(ctx):
     sorted_medals = sorted(preview_map.values(), key=medal_sort_key, reverse=True)
 
     medals_text = ""
-    for m in sorted_medals:
+    for idx, m in enumerate(sorted_medals):
         parts = []
         if m.get("gold",   0): parts.append(f"🥇 x{m['gold']}")
         if m.get("silver", 0): parts.append(f"🥈 x{m['silver']}")
         if m.get("bronze", 0): parts.append(f"🥉 x{m['bronze']}")
-        medals_text += f"**{m['user']}** — {' '.join(parts)}\n"
+        medals_text += f"`#{idx + 1}` **{m['user']}** — {' '.join(parts)}\n"
 
     medals_embed = discord.Embed(
         title="🏅 All-Time Podium Record (preview after close)",
@@ -1069,12 +1069,12 @@ async def close_month(ctx):
     all_medals.sort(key=medal_sort_key, reverse=True)
 
     medals_text = ""
-    for m in all_medals:
+    for idx, m in enumerate(all_medals):
         parts = []
         if m.get("gold",   0): parts.append(f"🥇 x{m['gold']}")
         if m.get("silver", 0): parts.append(f"🥈 x{m['silver']}")
         if m.get("bronze", 0): parts.append(f"🥉 x{m['bronze']}")
-        medals_text += f"**{m['user']}** — {' '.join(parts)}\n"
+        medals_text += f"`#{idx + 1}` **{m['user']}** — {' '.join(parts)}\n"
 
     medals_embed = discord.Embed(
         title="🏅 All-Time Podium Record",
