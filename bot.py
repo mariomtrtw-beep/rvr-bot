@@ -560,7 +560,8 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
         # Place label small, above name
         draw.text((COL_PLAYER,    y1 + 12), podium_labels[i],  fill=(*color, 200), font=fnt["place_lbl"])
         # Player name
-        draw.text((COL_PLAYER,    y1 + 48), p["user"],         fill=(*WHITE, 255), font=fnt["name_top3"])
+        name_tint = tuple(int(WHITE[j] * 0.75 + color[j] * 0.25) for j in range(3))
+        draw.text((COL_PLAYER,    y1 + 48), p["user"],         fill=(*name_tint, 255), font=fnt["name_top3"])
         # Medal shape (clasp bar on top + disc with rank number) after name
         name_w    = draw.textlength(p["user"], font=fnt["name_top3"])
         disc_r    = 20 if i == 0 else 16
