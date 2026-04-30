@@ -17,7 +17,7 @@ APPROVAL_CHANNEL        = "admin-approvals"
 LEADERBOARD_CHANNEL     = "leaderboard"
 MONTHLY_RESULTS_CHANNEL = "monthly-results"
 
-POINTS = [10, 7, 5, 3, 2, 1]
+POINTS = [15, 12, 10, 8, 7, 6, 5, 4, 3, 2, 1]
 
 BANNER = "https://media.discordapp.net/attachments/1491238480993456259/1492468917094846547/banner_thin.png"
 
