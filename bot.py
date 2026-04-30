@@ -828,8 +828,9 @@ def generate_leaderboard_image(cycle: str, ranked: list, rank_deltas: dict | Non
         draw.text((COL_RANK,   mid_y - 20), f"#{i+1}", fill=(*color, 255), font=fnt["pts_top3"], anchor="lm")
         draw_arrow(COL_ARROW, mid_y - 20, rank_deltas.get(p.get("uid"), 0) if rank_deltas else 0)
         draw.text((COL_PLAYER, y1 + 12), podium_labels[i], fill=(*color, 200), font=fnt["place_lbl"])
-        draw.text((COL_PLAYER, y1 + 48), p["user"],        fill=(*WHITE, 255), font=fnt["name_top3"])
-        draw.text((COL_PTS,    mid_y),   str(p["points"]), fill=(*pc,    255), font=fnt["pts_top3"], anchor="rm")
+        name_tint = tuple(int(WHITE[j] * 0.75 + color[j] * 0.25) for j in range(3))
+        draw.text((COL_PLAYER, y1 + 48), p["user"],        fill=(*name_tint, 255), font=fnt["name_top3"])
+        draw.text((COL_PTS,    mid_y),   str(p["points"]), fill=(*pc,        255), font=fnt["pts_top3"], anchor="rm")
 
         y += card_h + TOP3_GAP
 
