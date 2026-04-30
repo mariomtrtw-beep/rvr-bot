@@ -563,6 +563,11 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
         tint_w = 0.75 if i != 1 else 0.50
         name_tint = tuple(int(WHITE[j] * tint_w + color[j] * (1 - tint_w)) for j in range(3))
         draw.text((COL_PLAYER,    y1 + 48), p["user"],         fill=(*name_tint, 255), font=fnt["name_top3"])
+        # Shine highlight pass
+        shine = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        ImageDraw.Draw(shine).text((COL_PLAYER, y1 + 46), p["user"], fill=(255, 255, 255, 90), font=fnt["name_top3"])
+        img = Image.alpha_composite(img, shine)
+        draw = ImageDraw.Draw(img)
         # Medal shape (clasp bar on top + disc with rank number) after name
         name_w    = draw.textlength(p["user"], font=fnt["name_top3"])
         disc_r    = 20 if i == 0 else 16
@@ -833,6 +838,11 @@ def generate_leaderboard_image(cycle: str, ranked: list, rank_deltas: dict | Non
         tint_w = 0.75 if i != 1 else 0.50
         name_tint = tuple(int(WHITE[j] * tint_w + color[j] * (1 - tint_w)) for j in range(3))
         draw.text((COL_PLAYER, y1 + 48), p["user"],        fill=(*name_tint, 255), font=fnt["name_top3"])
+        # Shine highlight pass
+        shine = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        ImageDraw.Draw(shine).text((COL_PLAYER, y1 + 46), p["user"], fill=(255, 255, 255, 90), font=fnt["name_top3"])
+        img = Image.alpha_composite(img, shine)
+        draw = ImageDraw.Draw(img)
         draw.text((COL_PTS,    mid_y),   str(p["points"]), fill=(*pc,        255), font=fnt["pts_top3"], anchor="rm")
 
         y += card_h + TOP3_GAP
