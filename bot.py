@@ -541,7 +541,7 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
     draw = ImageDraw.Draw(img)
     draw.text((COL_RANK,   ty + 8), "#",      fill=(*CYAN, 210), font=fnt["sec_hdr"])
     draw.text((COL_PLAYER, ty + 8), "PLAYER", fill=(*CYAN, 210), font=fnt["sec_hdr"])
-    draw.text((COL_PTS,    ty + 8), "PTS",    fill=(*CYAN, 210), font=fnt["sec_hdr"], anchor="rm")
+    draw.text((COL_PTS,    ty + 8), "PTS",    fill=(*CYAN, 210), font=fnt["sec_hdr"], anchor="rt")
     glow_line(PAD, ty + TABLE_HDR_H - 4, W - PAD, ty + TABLE_HDR_H - 4, CYAN, radius=2)
 
     # ── TOP 3 CARDS ───────────────────────────────────────────────────────────
@@ -679,8 +679,8 @@ def generate_leaderboard_image(cycle: str, ranked: list, rank_deltas: dict | Non
         pass
 
     COL_RANK       = PAD + 20
-    COL_ARROW      = PAD + 92
-    COL_PLAYER     = PAD + 130
+    COL_ARROW      = PAD + 116
+    COL_PLAYER     = PAD + 158
     COL_PTS        = W - PAD - 20
     TABLE_HDR_H    = 52
 
@@ -810,7 +810,7 @@ def generate_leaderboard_image(cycle: str, ranked: list, rank_deltas: dict | Non
     draw = ImageDraw.Draw(img)
     draw.text((COL_RANK,   ty + 8), "#",      fill=(*CYAN, 210), font=fnt["sec_hdr"])
     draw.text((COL_PLAYER, ty + 8), "PLAYER", fill=(*CYAN, 210), font=fnt["sec_hdr"])
-    draw.text((COL_PTS,    ty + 8), "PTS",    fill=(*CYAN, 210), font=fnt["sec_hdr"], anchor="rm")
+    draw.text((COL_PTS,    ty + 8), "PTS",    fill=(*CYAN, 210), font=fnt["sec_hdr"], anchor="rt")
     glow_line(PAD, ty + TABLE_HDR_H - 4, W - PAD, ty + TABLE_HDR_H - 4, CYAN, radius=2)
 
     # ── TOP 3 CARDS ───────────────────────────────────────────────────────────
