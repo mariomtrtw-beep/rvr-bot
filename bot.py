@@ -1037,17 +1037,15 @@ async def close_month(ctx):
     if ranked:
         img_buf = generate_results_image(cycle, ranked)
         announcement = (
-            f"{role_ping}\n\n"
-            f"⚡ The **{cycle}** Championship is over!\n"
-            f"The dust has settled, the times are locked in — {winner_mention} takes the crown this month.\n"
-            f"See you on the track in **{next_month_name}**. 👑"
+            f"{role_ping} <:RVRU:1495544256444633198> The **{cycle}** Months Championship is over! <:RVRU:1495544256444633198>\n"
+            f"The dust has settled, the times are locked in — {winner_mention} 👑 takes the crown this month.\n"
+            f"See you on the track in **{next_month_name}**."
         )
         await results_ch.send(content=announcement, file=discord.File(img_buf, filename="results.png"))
     else:
         await results_ch.send(
-            f"{role_ping}\n\n"
-            f"⚡ The **{cycle}** Championship is over!\n"
-            f"No times were submitted this month — see you in **{next_month_name}**. 👑"
+            f"{role_ping} <:RVRU:1495544256444633198> The **{cycle}** Months Championship is over! <:RVRU:1495544256444633198>\n"
+            f"No times were submitted this month — see you in **{next_month_name}**."
         )
 
     if tracks_text:
