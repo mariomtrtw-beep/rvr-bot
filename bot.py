@@ -560,7 +560,8 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
         # Place label small, above name
         draw.text((COL_PLAYER,    y1 + 12), podium_labels[i],  fill=(*color, 200), font=fnt["place_lbl"])
         # Player name
-        name_tint = tuple(int(WHITE[j] * 0.75 + color[j] * 0.25) for j in range(3))
+        tint_w = 0.75 if i != 1 else 0.50
+        name_tint = tuple(int(WHITE[j] * tint_w + color[j] * (1 - tint_w)) for j in range(3))
         draw.text((COL_PLAYER,    y1 + 48), p["user"],         fill=(*name_tint, 255), font=fnt["name_top3"])
         # Medal shape (clasp bar on top + disc with rank number) after name
         name_w    = draw.textlength(p["user"], font=fnt["name_top3"])
@@ -829,7 +830,8 @@ def generate_leaderboard_image(cycle: str, ranked: list, rank_deltas: dict | Non
         draw.text((COL_RANK,   mid_y - 20), f"#{i+1}", fill=(*color, 255), font=fnt["pts_top3"], anchor="lm")
         draw_arrow(COL_ARROW, mid_y - 20, rank_deltas.get(p.get("uid"), 0) if rank_deltas else 0)
         draw.text((COL_PLAYER, y1 + 12), podium_labels[i], fill=(*color, 200), font=fnt["place_lbl"])
-        name_tint = tuple(int(WHITE[j] * 0.75 + color[j] * 0.25) for j in range(3))
+        tint_w = 0.75 if i != 1 else 0.50
+        name_tint = tuple(int(WHITE[j] * tint_w + color[j] * (1 - tint_w)) for j in range(3))
         draw.text((COL_PLAYER, y1 + 48), p["user"],        fill=(*name_tint, 255), font=fnt["name_top3"])
         draw.text((COL_PTS,    mid_y),   str(p["points"]), fill=(*pc,        255), font=fnt["pts_top3"], anchor="rm")
 
