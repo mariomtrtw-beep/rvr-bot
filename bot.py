@@ -360,20 +360,21 @@ def _load_font(bold: bool, size: int):
     except TypeError:
         return ImageFont.load_default()
 
-def pts_color(rank: int, total: int) -> tuple:
-    """Green (1st) → Yellow (mid) → Red (last)"""
-    if total <= 1:
-        return (0, 220, 90)
-    t      = rank / (total - 1)
+def pts_color(points: int, max_points: int) -> tuple:
+    """Green (max pts) → Yellow (mid) → Red (0 pts)"""
     GREEN  = (0, 220, 90)
     YELLOW = (255, 200, 0)
     RED    = (255, 55, 55)
+    if max_points <= 0:
+        return RED
+    t = 1.0 - min(points, max_points) / max_points  # 0 = green, 1 = red
     if t <= 0.5:
         s = t / 0.5
+        a, b = GREEN, YELLOW
     else:
-        GREEN, YELLOW = YELLOW, RED
         s = (t - 0.5) / 0.5
-    return tuple(int(GREEN[i] + s * (YELLOW[i] - GREEN[i])) for i in range(3))
+        a, b = YELLOW, RED
+    return tuple(int(a[i] + s * (b[i] - a[i])) for i in range(3))
 
 def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
     import random
@@ -429,6 +430,7 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
     TABLE_HDR_H    = 52
 
     total          = len(ranked)
+    max_points     = ranked[0]["points"] if ranked else 1
     top3           = ranked[:3]
     others         = ranked[3:]
     TOP3_CARD_H    = [158, 120, 120]
@@ -548,7 +550,7 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
     y = header_h + TABLE_HDR_H + 14
     for i, p in enumerate(top3):
         color  = podium_colors[i]
-        pc     = pts_color(i, total)
+        pc     = pts_color(p["points"], max_points)
         card_h = TOP3_CARD_H[i]
         x1, y1, x2, y2 = PAD, y, W - PAD, y + card_h
 
@@ -615,7 +617,7 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
         for idx, p in enumerate(others):
             rank   = idx + 3
             place  = idx + 4
-            pc     = pts_color(rank, total)
+            pc     = pts_color(p["points"], max_points)
             ry     = oy + idx * OTHER_ROW_H
             mid_y  = ry + OTHER_ROW_H // 2
 
@@ -693,6 +695,7 @@ def generate_leaderboard_image(cycle: str, ranked: list, rank_deltas: dict | Non
     TABLE_HDR_H    = 52
 
     total          = len(ranked)
+    max_points     = ranked[0]["points"] if ranked else 1
     top3           = ranked[:3]
     others         = ranked[3:]
     TOP3_CARD_H    = [158, 120, 120]
@@ -825,7 +828,7 @@ def generate_leaderboard_image(cycle: str, ranked: list, rank_deltas: dict | Non
     y = header_h + TABLE_HDR_H + 14
     for i, p in enumerate(top3):
         color  = podium_colors[i]
-        pc     = pts_color(i, total)
+        pc     = pts_color(p["points"], max_points)
         card_h = TOP3_CARD_H[i]
         x1, y1, x2, y2 = PAD, y, W - PAD, y + card_h
         mid_y  = y1 + card_h // 2
@@ -863,7 +866,7 @@ def generate_leaderboard_image(cycle: str, ranked: list, rank_deltas: dict | Non
         for idx, p in enumerate(others):
             rank  = idx + 3
             place = idx + 4
-            pc    = pts_color(rank, total)
+            pc    = pts_color(p["points"], max_points)
             ry    = oy + idx * OTHER_ROW_H
             mid_y = ry + OTHER_ROW_H // 2
 
