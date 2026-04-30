@@ -26,6 +26,7 @@ mongo_client = AsyncIOMotorClient(MONGO_URL)
 db           = mongo_client["rvr_underground"]
 times_col    = db["times"]
 cycles_col   = db["cycles"]
+medals_col   = db["medals"]
 
 # ── Cycle helpers ─────────────────────────────────────────────────────────────
 async def get_current_cycle() -> str:
@@ -951,6 +952,37 @@ async def preview_month(ctx):
     img_buf = generate_results_image(cycle, ranked)
     await ctx.send(content=announcement, file=discord.File(img_buf, filename="preview.png"))
 
+    # Preview what the medals table will look like after closing
+    preview_medals = list(await medals_col.find().to_list(None))
+    # Simulate adding this month's podium on top of existing records
+    medal_keys = ["gold", "silver", "bronze"]
+    preview_map = {m["uid"]: dict(m) for m in preview_medals}
+    for idx, p in enumerate(ranked[:3]):
+        uid = p["uid"]
+        if uid not in preview_map:
+            preview_map[uid] = {"uid": uid, "user": p["user"], "gold": 0, "silver": 0, "bronze": 0}
+        preview_map[uid][medal_keys[idx]] = preview_map[uid].get(medal_keys[idx], 0) + 1
+        preview_map[uid]["user"] = p["user"]
+
+    def medal_sort_key(m):
+        return (m.get("gold", 0), m.get("silver", 0), m.get("bronze", 0))
+    sorted_medals = sorted(preview_map.values(), key=medal_sort_key, reverse=True)
+
+    medals_text = ""
+    for m in sorted_medals:
+        parts = []
+        if m.get("gold",   0): parts.append(f"🥇 x{m['gold']}")
+        if m.get("silver", 0): parts.append(f"🥈 x{m['silver']}")
+        if m.get("bronze", 0): parts.append(f"🥉 x{m['bronze']}")
+        medals_text += f"**{m['user']}** — {' '.join(parts)}\n"
+
+    medals_embed = discord.Embed(
+        title="🏅 All-Time Podium Record (preview after close)",
+        description=medals_text or "*No records yet.*",
+        color=0xFFD700
+    )
+    await ctx.send(embed=medals_embed)
+
 
 @bot.command(name="closemonth")
 @commands.has_permissions(manage_guild=True)
@@ -1020,6 +1052,36 @@ async def close_month(ctx):
 
     if tracks_text:
         await results_ch.send(embed=tracks_embed)
+
+    # Update all-time medals
+    medal_keys = ["gold", "silver", "bronze"]
+    for idx, p in enumerate(ranked[:3]):
+        await medals_col.update_one(
+            {"uid": p["uid"]},
+            {"$inc": {medal_keys[idx]: 1}, "$set": {"user": p["user"]}},
+            upsert=True
+        )
+
+    # Post all-time medals table
+    all_medals = await medals_col.find().to_list(None)
+    def medal_sort_key(m):
+        return (m.get("gold", 0), m.get("silver", 0), m.get("bronze", 0))
+    all_medals.sort(key=medal_sort_key, reverse=True)
+
+    medals_text = ""
+    for m in all_medals:
+        parts = []
+        if m.get("gold",   0): parts.append(f"🥇 x{m['gold']}")
+        if m.get("silver", 0): parts.append(f"🥈 x{m['silver']}")
+        if m.get("bronze", 0): parts.append(f"🥉 x{m['bronze']}")
+        medals_text += f"**{m['user']}** — {' '.join(parts)}\n"
+
+    medals_embed = discord.Embed(
+        title="🏅 All-Time Podium Record",
+        description=medals_text or "*No records yet.*",
+        color=0xFFD700
+    )
+    await results_ch.send(embed=medals_embed)
 
     # Close current cycle
     now = datetime.now(timezone.utc)
