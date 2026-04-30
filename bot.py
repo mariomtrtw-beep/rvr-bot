@@ -163,6 +163,15 @@ async def on_reaction_add(reaction, user):
         uid      = sub["uid"]
         cycle    = await get_current_cycle()
 
+        # Snapshot rankings before this approval
+        _pre_all = await get_all_data(cycle)
+        _pre_pts: dict[int, int] = {}
+        for _t, _es in _pre_all.items():
+            for _i, _e in enumerate(_es):
+                _p = POINTS[_i] if _i < len(POINTS) else 0
+                _pre_pts[_e["uid"]] = _pre_pts.get(_e["uid"], 0) + _p
+        _pre_rank_map = {u: i for i, u in enumerate(sorted(_pre_pts, key=lambda u: _pre_pts[u], reverse=True))}
+
         existing = await times_col.find_one({"track": track, "uid": uid, "cycle": cycle})
         if existing:
             old_seconds = time_to_seconds(existing["time"])
@@ -182,6 +191,17 @@ async def on_reaction_add(reaction, user):
             "cycle": cycle,
         })
 
+        # Compute post rankings and deltas
+        _post_all = await get_all_data(cycle)
+        _post_pts: dict[int, int] = {}
+        for _t, _es in _post_all.items():
+            for _i, _e in enumerate(_es):
+                _p = POINTS[_i] if _i < len(POINTS) else 0
+                _post_pts[_e["uid"]] = _post_pts.get(_e["uid"], 0) + _p
+        _post_rank_list = sorted(_post_pts, key=lambda u: _post_pts[u], reverse=True)
+        _post_rank_map  = {u: i for i, u in enumerate(_post_rank_list)}
+        _rank_deltas    = {u: (_pre_rank_map.get(u, len(_pre_rank_map)) - _post_rank_map[u]) for u in _post_rank_map}
+
         sub_ch = guild.get_channel(sub["submission_channel_id"])
         if sub_ch:
             member  = guild.get_member(uid)
@@ -190,7 +210,7 @@ async def on_reaction_add(reaction, user):
 
         await reaction.message.edit(content="✅ Approved!")
         await reaction.message.clear_reactions()
-        await update_leaderboard(guild)
+        await update_leaderboard(guild, rank_deltas=_rank_deltas)
 
     elif str(reaction.emoji) == "❌":
         sub_ch = guild.get_channel(sub["submission_channel_id"])
@@ -203,7 +223,7 @@ async def on_reaction_add(reaction, user):
         await reaction.message.clear_reactions()
 
 
-async def update_leaderboard(guild):
+async def update_leaderboard(guild, rank_deltas: dict | None = None):
     lb_ch = discord.utils.get(guild.text_channels, name=LEADERBOARD_CHANNEL)
     if not lb_ch:
         return
@@ -217,35 +237,13 @@ async def update_leaderboard(guild):
             pts = POINTS[i] if i < len(POINTS) else 0
             uid = entry["uid"]
             if uid not in player_points:
-                player_points[uid] = {"user": entry["user"], "points": 0}
+                player_points[uid] = {"user": entry["user"], "uid": uid, "points": 0}
             player_points[uid]["points"] += pts
 
     ranked = sorted(player_points.values(), key=lambda x: x["points"], reverse=True)
     medals = ["🥇", "🥈", "🥉"]
 
-    # Overall standings
-    if ranked:
-        standings = ""
-        for i, p in enumerate(ranked):
-            medal = medals[i] if i < 3 else f"`#{i+1}`"
-            standings += f"{medal} **{p['user']}** — **{p['points']} pts**\n"
-    else:
-        standings = "*No times submitted yet!*"
-
-    standings_embed = discord.Embed(
-        description=(
-            f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-            f"🏆 **__OVERALL STANDINGS — {cycle}__**\n"
-            f"{standings}"
-            f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬"
-        ),
-        color=0x00cfff,
-        timestamp=datetime.now(timezone.utc)
-    )
-    standings_embed.set_image(url=BANNER)
-    standings_embed.set_footer(text="RVR Underground • Times are best laps")
-
-    # Track times
+    # Track times embed
     tracks_text = ""
     for track, entries in all_data.items():
         tracks_text += f"\n**🏁 {track.upper()}**\n"
@@ -256,13 +254,19 @@ async def update_leaderboard(guild):
         tracks_text += "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
 
     times_embed = discord.Embed(
-        description=tracks_text,
+        description=tracks_text if tracks_text else "*No times submitted yet!*",
         color=0x00cfff
     )
 
     await lb_ch.purge(limit=100)
     await asyncio.sleep(1)
-    await lb_ch.send(embed=standings_embed)
+
+    if ranked:
+        img_buf = generate_leaderboard_image(cycle, ranked, rank_deltas)
+        await lb_ch.send(file=discord.File(img_buf, filename="leaderboard.png"))
+    else:
+        await lb_ch.send(content="*No times submitted yet!*")
+
     await lb_ch.send(embed=times_embed)
 
 
@@ -616,6 +620,246 @@ def generate_results_image(cycle: str, ranked: list) -> io.BytesIO:
             draw.text((COL_RANK,   mid_y), f"#{place}",      fill=(*GRAY,  255), font=fnt["name_rest"], anchor="lm")
             draw.text((COL_PLAYER, mid_y), p["user"],        fill=(*WHITE, 255), font=fnt["name_rest"], anchor="lm")
             draw.text((COL_PTS,    mid_y), str(p["points"]), fill=(*pc,    255), font=fnt["pts_rest"],  anchor="rm")
+
+    # ── FOOTER ────────────────────────────────────────────────────────────────
+    glow_line(PAD, H - 14, W - PAD, H - 14, CYAN, radius=2)
+
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, format="PNG")
+    buf.seek(0)
+    return buf
+
+
+def generate_leaderboard_image(cycle: str, ranked: list, rank_deltas: dict | None = None) -> io.BytesIO:
+    import random
+    W   = 1000
+    PAD = 44
+
+    BG_TOP  = (2,    8,  22)
+    BG_BOT  = (5,    3,  26)
+    CYAN    = (0,  200, 255)
+    GOLD    = (255, 200,   0)
+    SILVER  = (140, 190, 240)
+    BRONZE  = (190, 105,  40)
+    WHITE   = (255, 255, 255)
+    GRAY    = (80,  105, 140)
+    CARD_BG = (5,   12,  28)
+    DIV     = (28,  48,  78)
+
+    fnt = {
+        "title":     _load_font(True,  83),
+        "sub":       _load_font(False, 24),
+        "place_lbl": _load_font(True,  33),
+        "name_top3": _load_font(True,  53),
+        "pts_top3":  _load_font(True,  56),
+        "name_rest": _load_font(True,  35),
+        "pts_rest":  _load_font(True,  38),
+        "sec_hdr":   _load_font(True,  30),
+        "ftr":       _load_font(False, 17),
+    }
+
+    # ── Load banner ───────────────────────────────────────────────────────────
+    banner_img  = None
+    banner_h    = 0
+    MAX_BANNER_H = 200
+    banner_path  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "banner.png")
+    try:
+        raw       = Image.open(banner_path).convert("RGBA")
+        bw, bh    = raw.size
+        full_h    = int(W * bh / bw)
+        resized   = raw.resize((W, full_h), Image.LANCZOS)
+        if full_h > MAX_BANNER_H:
+            crop_top   = (full_h - MAX_BANNER_H) // 2
+            banner_img = resized.crop((0, crop_top, W, crop_top + MAX_BANNER_H))
+            banner_h   = MAX_BANNER_H
+        else:
+            banner_img = resized
+            banner_h   = full_h
+    except Exception:
+        pass
+
+    COL_RANK       = PAD + 20
+    COL_ARROW      = PAD + 92
+    COL_PLAYER     = PAD + 130
+    COL_PTS        = W - PAD - 20
+    TABLE_HDR_H    = 52
+
+    total          = len(ranked)
+    top3           = ranked[:3]
+    others         = ranked[3:]
+    TOP3_CARD_H    = [158, 120, 120]
+    TOP3_GAP       = 10
+    OTHER_ROW_H    = 66
+    subtitle_h     = 48
+    header_h       = banner_h + subtitle_h + 16
+    top3_h         = TABLE_HDR_H + sum(TOP3_CARD_H[:len(top3)]) + (len(top3) - 1) * TOP3_GAP + 16
+    others_h       = (len(others) * OTHER_ROW_H + 30) if others else 0
+    footer_h       = 24
+    H = header_h + top3_h + others_h + footer_h
+
+    # ── Base + gradient ───────────────────────────────────────────────────────
+    img = Image.new("RGBA", (W, H), (*BG_TOP, 255))
+    draw = ImageDraw.Draw(img)
+    for y in range(H):
+        t = y / H
+        c = tuple(int(BG_TOP[i] + t * (BG_BOT[i] - BG_TOP[i])) for i in range(3))
+        draw.line([(0, y), (W - 1, y)], fill=(*c, 255))
+
+    # ── Circuit board traces ──────────────────────────────────────────────────
+    rng     = random.Random(1337)
+    GRID    = 50
+    circuit = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    cdraw   = ImageDraw.Draw(circuit)
+    grid    = {}
+    for col in range(W // GRID + 2):
+        for row in range(H // GRID + 2):
+            if rng.random() < 0.58:
+                grid[(col, row)] = (
+                    col * GRID + rng.randint(-6, 6),
+                    row * GRID + rng.randint(-6, 6),
+                )
+    for (col, row), (x, y) in grid.items():
+        if (col + 1, row) in grid and rng.random() < 0.40:
+            nx, ny = grid[(col + 1, row)]
+            cdraw.line([(x, y), (nx, ny)], fill=(0, 140, 255, 100), width=1)
+        if (col, row + 1) in grid and rng.random() < 0.40:
+            nx, ny = grid[(col, row + 1)]
+            cdraw.line([(x, y), (nx, ny)], fill=(0, 140, 255, 100), width=1)
+        if rng.random() < 0.20:
+            r = rng.randint(1, 3)
+            cdraw.ellipse([(x - r, y - r), (x + r, y + r)], fill=(0, 210, 255, 140))
+    img = Image.alpha_composite(img, circuit)
+
+    # ── Scanlines ─────────────────────────────────────────────────────────────
+    scan  = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    sdraw = ImageDraw.Draw(scan)
+    for sy in range(0, H, 3):
+        sdraw.line([(0, sy), (W, sy)], fill=(0, 0, 0, 7), width=1)
+    img = Image.alpha_composite(img, scan)
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    def glow_text(text, pos, font, color, radius=16, anchor="mt"):
+        nonlocal img
+        gl = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        ImageDraw.Draw(gl).text(pos, text, fill=(*color[:3], 170), font=font, anchor=anchor)
+        gl = gl.filter(ImageFilter.GaussianBlur(radius))
+        img = Image.alpha_composite(img, gl)
+        img = Image.alpha_composite(img, gl)
+        ImageDraw.Draw(img).text(pos, text, fill=(*color[:3], 255), font=font, anchor=anchor)
+
+    def glow_line(x1, y1, x2, y2, color, width=1, radius=4):
+        nonlocal img
+        gl = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        ImageDraw.Draw(gl).line([(x1, y1), (x2, y2)], fill=(*color[:3], 200), width=width + 2)
+        gl = gl.filter(ImageFilter.GaussianBlur(radius))
+        img = Image.alpha_composite(img, gl)
+        ImageDraw.Draw(img).line([(x1, y1), (x2, y2)], fill=(*color[:3], 255), width=width)
+
+    def bracket_card(x1, y1, x2, y2, color, bl=28, bw=2):
+        nonlocal img
+        gl = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        gd = ImageDraw.Draw(gl)
+        corners = [
+            [(x1, y1 + bl), (x1, y1), (x1 + bl, y1)],
+            [(x2 - bl, y1), (x2, y1), (x2, y1 + bl)],
+            [(x1, y2 - bl), (x1, y2), (x1 + bl, y2)],
+            [(x2 - bl, y2), (x2, y2), (x2, y2 - bl)],
+        ]
+        for pts in corners:
+            gd.line(pts, fill=(*color[:3], 150), width=bw + 3)
+        gl = gl.filter(ImageFilter.GaussianBlur(9))
+        img = Image.alpha_composite(img, gl)
+        img = Image.alpha_composite(img, gl)
+        d = ImageDraw.Draw(img)
+        d.rectangle([(x1 + 1, y1 + 1), (x2 - 1, y2 - 1)], fill=CARD_BG)
+        for pts in corners:
+            d.line(pts, fill=(*color[:3], 255), width=bw)
+
+    def draw_arrow(cx, cy, delta):
+        d = ImageDraw.Draw(img)
+        s = 11
+        if delta > 0:
+            color = (30, 220, 80, 255)
+            d.polygon([(cx, cy - s), (cx - s, cy + s // 2), (cx + s, cy + s // 2)], fill=color)
+        elif delta < 0:
+            color = (220, 60, 60, 255)
+            d.polygon([(cx, cy + s), (cx - s, cy - s // 2), (cx + s, cy - s // 2)], fill=color)
+        else:
+            color = (110, 130, 155, 255)
+            d.rectangle([(cx - s, cy - 3), (cx + s, cy + 3)], fill=color)
+
+    # ── HEADER ────────────────────────────────────────────────────────────────
+    if banner_img:
+        img.paste(banner_img, (0, 0), banner_img)
+    else:
+        glow_line(PAD, 28, W // 2 - 220, 28, CYAN, radius=3)
+        glow_line(W // 2 + 220, 28, W - PAD, 28, CYAN, radius=3)
+        glow_text("RVR UNDERGROUND", (W // 2, 26), fnt["title"], CYAN, radius=22)
+
+    draw = ImageDraw.Draw(img)
+    sub_y = banner_h + 8
+    draw.text((W // 2, sub_y), f"//  {cycle.upper()} LIVE STANDINGS  //",
+              fill=(*WHITE, 165), font=fnt["sub"], anchor="mt")
+    glow_line(PAD, sub_y + 30, W - PAD, sub_y + 30, CYAN, radius=3)
+
+    # ── GLOBAL TABLE HEADER ───────────────────────────────────────────────────
+    podium_colors = [GOLD, SILVER, BRONZE]
+    podium_labels = ["1ST PLACE", "2ND PLACE", "3RD PLACE"]
+
+    ty = header_h + 10
+    draw = ImageDraw.Draw(img)
+    draw.text((COL_RANK,   ty + 8), "#",      fill=(*CYAN, 210), font=fnt["sec_hdr"])
+    draw.text((COL_PLAYER, ty + 8), "PLAYER", fill=(*CYAN, 210), font=fnt["sec_hdr"])
+    draw.text((COL_PTS,    ty + 8), "PTS",    fill=(*CYAN, 210), font=fnt["sec_hdr"], anchor="rm")
+    glow_line(PAD, ty + TABLE_HDR_H - 4, W - PAD, ty + TABLE_HDR_H - 4, CYAN, radius=2)
+
+    # ── TOP 3 CARDS ───────────────────────────────────────────────────────────
+    y = header_h + TABLE_HDR_H + 14
+    for i, p in enumerate(top3):
+        color  = podium_colors[i]
+        pc     = pts_color(i, total)
+        card_h = TOP3_CARD_H[i]
+        x1, y1, x2, y2 = PAD, y, W - PAD, y + card_h
+        mid_y  = y1 + card_h // 2
+
+        bracket_card(x1, y1, x2, y2, color, bl=30, bw=2)
+
+        draw = ImageDraw.Draw(img)
+        draw.text((COL_RANK,   mid_y - 20), f"#{i+1}", fill=(*color, 255), font=fnt["pts_top3"], anchor="lm")
+        draw_arrow(COL_ARROW, mid_y - 20, rank_deltas.get(p.get("uid"), 0) if rank_deltas else 0)
+        draw.text((COL_PLAYER, y1 + 12), podium_labels[i], fill=(*color, 200), font=fnt["place_lbl"])
+        draw.text((COL_PLAYER, y1 + 48), p["user"],        fill=(*WHITE, 255), font=fnt["name_top3"])
+        draw.text((COL_PTS,    mid_y),   str(p["points"]), fill=(*pc,    255), font=fnt["pts_top3"], anchor="rm")
+
+        y += card_h + TOP3_GAP
+
+    # ── OTHER FINISHERS ───────────────────────────────────────────────────────
+    if others:
+        oy = header_h + top3_h + 10
+        glow_line(PAD, oy, W - PAD, oy, CYAN, radius=2)
+        draw = ImageDraw.Draw(img)
+        oy += 20
+
+        box_h = len(others) * OTHER_ROW_H + 6
+        bracket_card(PAD, oy - 4, W - PAD, oy + box_h, CYAN, bl=20, bw=1)
+        draw = ImageDraw.Draw(img)
+
+        for idx, p in enumerate(others):
+            rank  = idx + 3
+            place = idx + 4
+            pc    = pts_color(rank, total)
+            ry    = oy + idx * OTHER_ROW_H
+            mid_y = ry + OTHER_ROW_H // 2
+
+            if idx > 0:
+                draw.line([(PAD + 14, ry), (W - PAD - 14, ry)], fill=(*DIV, 255), width=1)
+            if idx % 2 == 1:
+                draw.rectangle([(PAD + 2, ry + 1), (W - PAD - 2, ry + OTHER_ROW_H - 2)], fill=(10, 18, 38))
+
+            draw.text((COL_RANK,   mid_y), f"#{place}",      fill=(*GRAY,  255), font=fnt["name_rest"], anchor="lm")
+            draw_arrow(COL_ARROW, mid_y, rank_deltas.get(p.get("uid"), 0) if rank_deltas else 0)
+            draw.text((COL_PLAYER, mid_y), p["user"],         fill=(*WHITE, 255), font=fnt["name_rest"], anchor="lm")
+            draw.text((COL_PTS,    mid_y), str(p["points"]),  fill=(*pc,    255), font=fnt["pts_rest"],  anchor="rm")
 
     # ── FOOTER ────────────────────────────────────────────────────────────────
     glow_line(PAD, H - 14, W - PAD, H - 14, CYAN, radius=2)
