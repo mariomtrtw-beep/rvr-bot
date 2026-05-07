@@ -30,7 +30,18 @@ medals_col   = db["medals"]
 ratings_col  = db["ratings"]
 
 GATHER_CHANNEL   = "Gather"
-DEFAULT_RATING   = 4
+DEFAULT_RATING   = 0.80
+
+SEED_RATINGS = [
+    ("Azaria", 1.15), ("Boban", 1.45), ("D.olo", 1.20), ("DC", 0.90),
+    ("DracoPOW", 0.50), ("gamer42", 0.20), ("Goxi", 1.40), ("H i r u", 1.00),
+    ("I VENDETT5 I", 1.35), ("Kilabarus", 1.40), ("Lager", 1.40), ("maci", 1.35),
+    ("nuclearhythmics", 1.00), ("orissm", 1.20), ("pokers72", DEFAULT_RATING),
+    ("rodik", 1.10), ("SebR", 1.00), ("Shigekix", 1.25), ("t0x1c", 1.20),
+    ("Taco", 1.10), ("TioRotti", 1.15), ("Topke", 1.25), ("Tytan", 1.00),
+    ("xpete", 1.25), ("yun", 1.15), ("Zigc", 1.15), ("ZipperZbieracz", 1.30),
+    ("Zsolti", 1.10), ("— 𝐋𝐨𝐥𝐛𝐢𝐭.", 1.20), ("𝙆𝙤𝙩𝙞𝙠_𝙓𝙋", 1.15),
+]
 
 # ── Cycle helpers ─────────────────────────────────────────────────────────────
 async def get_current_cycle() -> str:
@@ -1115,18 +1126,28 @@ async def list_members(ctx):
     await ctx.message.delete()
 
 
+@bot.command(name="seedratings")
+@commands.has_permissions(manage_guild=True)
+async def seed_ratings(ctx):
+    for name, rating in SEED_RATINGS:
+        await ratings_col.update_one(
+            {"user_lower": name.lower()},
+            {"$set": {"user": name, "user_lower": name.lower(), "rating": rating}},
+            upsert=True
+        )
+    await ctx.author.send(f"✅ Seeded {len(SEED_RATINGS)} player ratings.")
+    await ctx.message.delete()
+
+
 @bot.command(name="setrating")
 @commands.has_permissions(manage_guild=True)
-async def set_rating(ctx, member: discord.Member, rating: int):
-    if not 1 <= rating <= 10:
-        await ctx.send("❌ Rating must be between 1 and 10.")
-        return
+async def set_rating(ctx, member: discord.Member, rating: float):
     await ratings_col.update_one(
         {"uid": member.id},
-        {"$set": {"uid": member.id, "user": member.display_name, "rating": rating}},
+        {"$set": {"uid": member.id, "user": member.display_name, "user_lower": member.display_name.lower(), "rating": rating}},
         upsert=True
     )
-    await ctx.send(f"✅ **{member.display_name}** rated **{rating}/10**.")
+    await ctx.send(f"✅ **{member.display_name}** rated **{rating}**.")
 
 
 @bot.command(name="ratings")
@@ -1155,10 +1176,12 @@ async def make_teams(ctx):
         await ctx.send("❌ Not enough players in Gather.")
         return
 
-    # Fetch ratings for all members
+    # Fetch ratings for all members (try uid first, then display name)
     players = []
     for m in members:
         doc = await ratings_col.find_one({"uid": m.id})
+        if not doc:
+            doc = await ratings_col.find_one({"user_lower": m.display_name.lower()})
         rating = doc["rating"] if doc else DEFAULT_RATING
         players.append({"user": m.display_name, "uid": m.id, "rating": rating, "rated": bool(doc)})
 
