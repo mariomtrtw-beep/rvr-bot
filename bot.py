@@ -1105,6 +1105,16 @@ async def close_month(ctx):
         f"📅 New cycle **{new_cycle_name}** has started — leaderboard reset!"
     )
 
+@bot.command(name="listmembers")
+@commands.has_permissions(manage_guild=True)
+async def list_members(ctx):
+    members = [m for m in ctx.guild.members if not m.bot]
+    members.sort(key=lambda m: m.display_name.lower())
+    names = "\n".join(m.display_name for m in members)
+    await ctx.author.send(f"**Server members ({len(members)}):**\n```\n{names}\n```")
+    await ctx.message.delete()
+
+
 @bot.command(name="setrating")
 @commands.has_permissions(manage_guild=True)
 async def set_rating(ctx, member: discord.Member, rating: int):
@@ -1120,14 +1130,16 @@ async def set_rating(ctx, member: discord.Member, rating: int):
 
 
 @bot.command(name="ratings")
+@commands.has_permissions(manage_guild=True)
 async def show_ratings(ctx):
     all_ratings = await ratings_col.find().sort("rating", -1).to_list(None)
     if not all_ratings:
-        await ctx.send("No ratings set yet.")
+        await ctx.author.send("No ratings set yet.")
         return
     lines = "\n".join(f"`#{i+1}` **{r['user']}** — {r['rating']}/10" for i, r in enumerate(all_ratings))
     embed = discord.Embed(title="⭐ Player Ratings", description=lines, color=0x00cfff)
-    await ctx.send(embed=embed)
+    await ctx.author.send(embed=embed)
+    await ctx.message.delete()
 
 
 @bot.command(name="maketeams")
@@ -1160,22 +1172,11 @@ async def make_teams(ctx):
             team2.append(p)
 
     def fmt_team(team):
-        return "\n".join(
-            f"{'⭐ ' if p['rated'] else '❓ '}**{p['user']}** ({p['rating']}/10)"
-            for p in team
-        )
-
-    t1_avg = round(sum(p["rating"] for p in team1) / len(team1), 1)
-    t2_avg = round(sum(p["rating"] for p in team2) / len(team2), 1)
+        return "\n".join(f"**{p['user']}**" for p in team)
 
     embed = discord.Embed(title="🏎️ Teams", color=0x00cfff)
-    embed.add_field(name=f"🔵 Team 1 — avg {t1_avg}", value=fmt_team(team1), inline=True)
-    embed.add_field(name=f"🔴 Team 2 — avg {t2_avg}", value=fmt_team(team2), inline=True)
-
-    unrated = [p["user"] for p in players if not p["rated"]]
-    if unrated:
-        embed.set_footer(text=f"❓ Unrated (defaulted to {DEFAULT_RATING}/10): {', '.join(unrated)}")
-
+    embed.add_field(name=f"🔵 Team 1 ({len(team1)} players)", value=fmt_team(team1), inline=True)
+    embed.add_field(name=f"🔴 Team 2 ({len(team2)} players)", value=fmt_team(team2), inline=True)
     await ctx.send(embed=embed)
 
 
