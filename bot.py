@@ -27,6 +27,10 @@ db           = mongo_client["rvr_underground"]
 times_col    = db["times"]
 cycles_col   = db["cycles"]
 medals_col   = db["medals"]
+ratings_col  = db["ratings"]
+
+GATHER_CHANNEL   = "Gather"
+DEFAULT_RATING   = 4
 
 # ── Cycle helpers ─────────────────────────────────────────────────────────────
 async def get_current_cycle() -> str:
@@ -1101,6 +1105,80 @@ async def close_month(ctx):
         f"📅 New cycle **{new_cycle_name}** has started — leaderboard reset!"
     )
 
+@bot.command(name="setrating")
+@commands.has_permissions(manage_guild=True)
+async def set_rating(ctx, member: discord.Member, rating: int):
+    if not 1 <= rating <= 10:
+        await ctx.send("❌ Rating must be between 1 and 10.")
+        return
+    await ratings_col.update_one(
+        {"uid": member.id},
+        {"$set": {"uid": member.id, "user": member.display_name, "rating": rating}},
+        upsert=True
+    )
+    await ctx.send(f"✅ **{member.display_name}** rated **{rating}/10**.")
+
+
+@bot.command(name="ratings")
+async def show_ratings(ctx):
+    all_ratings = await ratings_col.find().sort("rating", -1).to_list(None)
+    if not all_ratings:
+        await ctx.send("No ratings set yet.")
+        return
+    lines = "\n".join(f"`#{i+1}` **{r['user']}** — {r['rating']}/10" for i, r in enumerate(all_ratings))
+    embed = discord.Embed(title="⭐ Player Ratings", description=lines, color=0x00cfff)
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="maketeams")
+@commands.has_permissions(manage_guild=True)
+async def make_teams(ctx):
+    vc = discord.utils.get(ctx.guild.voice_channels, name=GATHER_CHANNEL)
+    if not vc:
+        await ctx.send(f"❌ Voice channel `{GATHER_CHANNEL}` not found.")
+        return
+
+    members = [m for m in vc.members if not m.bot]
+    if len(members) < 2:
+        await ctx.send("❌ Not enough players in Gather.")
+        return
+
+    # Fetch ratings for all members
+    players = []
+    for m in members:
+        doc = await ratings_col.find_one({"uid": m.id})
+        rating = doc["rating"] if doc else DEFAULT_RATING
+        players.append({"user": m.display_name, "uid": m.id, "rating": rating, "rated": bool(doc)})
+
+    # Sort by rating descending, snake draft into 2 teams
+    players.sort(key=lambda p: p["rating"], reverse=True)
+    team1, team2 = [], []
+    for i, p in enumerate(players):
+        if i % 4 in (0, 3):
+            team1.append(p)
+        else:
+            team2.append(p)
+
+    def fmt_team(team):
+        return "\n".join(
+            f"{'⭐ ' if p['rated'] else '❓ '}**{p['user']}** ({p['rating']}/10)"
+            for p in team
+        )
+
+    t1_avg = round(sum(p["rating"] for p in team1) / len(team1), 1)
+    t2_avg = round(sum(p["rating"] for p in team2) / len(team2), 1)
+
+    embed = discord.Embed(title="🏎️ Teams", color=0x00cfff)
+    embed.add_field(name=f"🔵 Team 1 — avg {t1_avg}", value=fmt_team(team1), inline=True)
+    embed.add_field(name=f"🔴 Team 2 — avg {t2_avg}", value=fmt_team(team2), inline=True)
+
+    unrated = [p["user"] for p in players if not p["rated"]]
+    if unrated:
+        embed.set_footer(text=f"❓ Unrated (defaulted to {DEFAULT_RATING}/10): {', '.join(unrated)}")
+
+    await ctx.send(embed=embed)
+
+
 @bot.command(name="rvrhelp")
 async def rvr_help(ctx):
     embed = discord.Embed(title="🤖 RVR Bot Commands", color=discord.Color.blurple())
@@ -1112,6 +1190,9 @@ async def rvr_help(ctx):
     embed.add_field(name="!closemonth",                  value="Close the current monthly cycle, post results to #monthly-results, and start a new cycle", inline=False)
     embed.add_field(name="!removetrack <track>",         value="Remove a track and all its times (current cycle)", inline=False)
     embed.add_field(name="!removetime @player <track>",  value="Remove a player's time from a track (current cycle)", inline=False)
+    embed.add_field(name="!setrating @player <1-10>",    value="Set a player's skill rating for team balancing", inline=False)
+    embed.add_field(name="!maketeams",                   value="Auto-split players in Gather VC into 2 balanced teams", inline=False)
+    embed.add_field(name="!ratings",                     value="Show all player ratings", inline=False)
     embed.add_field(
         name="── Submitting a time ──",
         value="Post in #time-submissions with a screenshot:\n`Track: Toys In The Hood | Time: 1:23.456`",
