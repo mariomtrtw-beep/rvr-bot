@@ -1126,6 +1126,14 @@ async def list_members(ctx):
     await ctx.message.delete()
 
 
+@bot.command(name="cleanratings")
+@commands.has_permissions(manage_guild=True)
+async def clean_ratings(ctx):
+    result = await ratings_col.delete_many({"rating": {"$gt": 1.5}})
+    await ctx.author.send(f"✅ Removed {result.deleted_count} bad rating entries.")
+    await ctx.message.delete()
+
+
 @bot.command(name="seedratings")
 @commands.has_permissions(manage_guild=True)
 async def seed_ratings(ctx):
@@ -1157,7 +1165,7 @@ async def show_ratings(ctx):
     if not all_ratings:
         await ctx.author.send("No ratings set yet.")
         return
-    lines = "\n".join(f"`#{i+1}` **{r['user']}** — {r['rating']}/10" for i, r in enumerate(all_ratings))
+    lines = "\n".join(f"`#{i+1}` **{r['user']}** — {r['rating']}" for i, r in enumerate(all_ratings))
     embed = discord.Embed(title="⭐ Player Ratings", description=lines, color=0x00cfff)
     await ctx.author.send(embed=embed)
     await ctx.message.delete()
