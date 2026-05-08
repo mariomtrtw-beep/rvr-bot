@@ -108,7 +108,7 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    if message.channel.name == SUBMISSION_CHANNEL:
+    if message.channel.name == SUBMISSION_CHANNEL and not message.content.startswith("!"):
         if not message.attachments:
             await message.reply("❌ Please attach a screenshot as proof with your submission!")
             return
