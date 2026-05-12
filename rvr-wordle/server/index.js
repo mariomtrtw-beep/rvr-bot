@@ -100,6 +100,26 @@ app.get('/api/daily-word', async (req, res) => {
   }
 });
 
+// API endpoint to generate token for bot
+app.post('/api/generate-token', async (req, res) => {
+  try {
+    const { uid, username } = req.body;
+    
+    // Generate JWT token
+    const token = jwt.sign({
+      uid: uid,
+      username: username,
+      source: "bot",
+      exp: Math.floor(Date.now() / 1000) + (60 * 60) // 1 hour expiration
+    }, process.env.JWT_SECRET || 'fallback_secret');
+    
+    res.json({ token: token });
+  } catch (error) {
+    console.error('Error generating token:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // API endpoint to verify token
 app.post('/api/verify-token', async (req, res) => {
   try {
