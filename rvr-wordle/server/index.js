@@ -523,7 +523,7 @@ async function saveSolveToDaily(userId, username, mode, result) {
 const PORT = process.env.PORT || 3001;
 
 connectDB().then(() => {
-  server.listen(PORT, () => {
+  server.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 RVR-Wordle server running on port ${PORT}`);
   });
 });
