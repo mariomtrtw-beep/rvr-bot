@@ -1,0 +1,11 @@
+[build]
+  builder = "nixpacks"
+
+[deploy]
+  startCommand = "npm run build && npx serve dist -p 8080"
+  port = 8080
+  healthcheckPath = "/"
+  healthcheckTimeout = 100
+
+[env]
+  NODE_ENV = "production"
