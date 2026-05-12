@@ -3,8 +3,6 @@
 
 [deploy]
   startCommand = "npm run build"
-  healthcheckPath = "/index.html"
-  healthcheckTimeout = 100
 
 [env]
   NODE_ENV = "production"
