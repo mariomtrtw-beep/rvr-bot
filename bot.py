@@ -1231,8 +1231,9 @@ async def wordle_cmd(ctx):
     
     # Send to Wordle backend to store/verify
     try:
+        backend_url = os.environ.get("WORDLE_BACKEND_URL", "http://localhost:3001")
         response = requests.post(
-            "http://localhost:3001/api/generate-token",  # Update to production URL
+            f"{backend_url}/api/generate-token",
             json={"uid": ctx.author.id, "username": ctx.author.name},
             timeout=5
         )
@@ -1245,9 +1246,10 @@ async def wordle_cmd(ctx):
                     description="Click below to play the multiplayer Wordle game!",
                     color=discord.Color.blue()
                 )
+                frontend_url = os.environ.get("WORDLE_FRONTEND_URL", "http://localhost:5173")
                 embed.add_field(
                     name="🏎️ Play Now",
-                    value=f"[Click here to play](https://wordle.rvr-bot.com?token={web_token})",
+                    value=f"[Click here to play]({frontend_url}?token={web_token})",
                     inline=False
                 )
                 embed.set_footer(text="Token expires in 1 hour")
