@@ -9,7 +9,7 @@ const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 
-const words = require('../shared/words');
+const words = require('./words');
 const authRoutes = require('./auth');
 const gameLogic = require('./game-logic');
 
