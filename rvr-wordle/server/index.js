@@ -7,6 +7,7 @@ const passport = require('passport');
 const { MongoClient } = require('mongodb');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
+const path = require('path');
 require('dotenv').config();
 
 const words = require('./words');
@@ -61,6 +62,12 @@ app.use(passport.session());
 
 // Routes
 app.use('/auth', authRoutes);
+
+// Serve React app
+app.use(express.static(path.join(__dirname, '../web/dist')));
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '../web/dist/index.html'));
+});
 
 // Health check endpoint
 app.get('/health', (req, res) => {
