@@ -16,5 +16,8 @@ export default defineConfig({
         ws: true
       }
     }
+  },
+  define: {
+    'import.meta.env.VITE_API_URL': JSON.stringify(process.env.VITE_API_URL || 'https://worker-production-cbde.up.railway.app')
   }
 })
