@@ -3,10 +3,8 @@
 
 [deploy]
   startCommand = "npm run build"
-  healthcheckPath = "/"
+  healthcheckPath = "/index.html"
   healthcheckTimeout = 100
-  staticPublishPath = "dist"
-  routingMode = "single"
 
 [env]
   NODE_ENV = "production"
