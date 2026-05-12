@@ -281,13 +281,13 @@ async def update_leaderboard(guild, rank_deltas: dict | None = None):
     await lb_ch.purge(limit=100)
     await asyncio.sleep(1)
 
+    await lb_ch.send(embed=times_embed)
+
     if ranked:
         img_buf = generate_leaderboard_image(cycle, ranked, rank_deltas)
         await lb_ch.send(file=discord.File(img_buf, filename="leaderboard.png"))
     else:
         await lb_ch.send(content="*No times submitted yet!*")
-
-    await lb_ch.send(embed=times_embed)
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
