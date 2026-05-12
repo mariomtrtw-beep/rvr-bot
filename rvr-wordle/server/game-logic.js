@@ -1,5 +1,5 @@
 // Game logic helpers
-const words = require('../shared/words');
+const words = require('./words');
 
 // Check if game is complete
 function isGameComplete(gameState) {
