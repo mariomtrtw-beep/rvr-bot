@@ -5,6 +5,7 @@
   startCommand = "npm run build"
   healthcheckPath = "/"
   healthcheckTimeout = 100
+  staticPublishPath = "dist"
 
 [env]
   NODE_ENV = "production"
