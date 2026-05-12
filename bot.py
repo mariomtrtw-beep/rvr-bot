@@ -1228,7 +1228,7 @@ async def wordle_cmd(ctx):
         "username": ctx.author.name,
         "avatar": str(ctx.author.avatar.url) if ctx.author.avatar else None,
         "source": "bot",
-        "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=1)
+        "exp": datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
     }
     token = jwt.encode(payload, os.environ.get("JWT_SECRET", "fallback_secret"), algorithm="HS256")
     
