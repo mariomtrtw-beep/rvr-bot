@@ -527,7 +527,7 @@ async function saveSolveToDaily(userId, username, mode, result) {
 }
 
 // Start server
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 8080;
 
 connectDB().then(() => {
   server.listen(PORT, '0.0.0.0', () => {
