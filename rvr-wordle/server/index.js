@@ -55,6 +55,11 @@ app.use(passport.session());
 // Routes
 app.use('/auth', authRoutes);
 
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).send('OK');
+});
+
 // API endpoint to get daily word info
 app.get('/api/daily-word', async (req, res) => {
   try {
