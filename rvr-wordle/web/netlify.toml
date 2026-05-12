@@ -1,0 +1,18 @@
+[build]
+  publish = "dist"
+  command = "npm run build"
+
+[build.environment]
+  VITE_API_URL = "https://rvr-wordle-production.up.railway.app"
+  VITE_DISCORD_CLIENT_ID = "your_discord_client_id"
+  VITE_DISCORD_REDIRECT_URI = "https://rvr-wordle.netlify.app/auth/callback"
+
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/:splat"
+  status = 200
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
