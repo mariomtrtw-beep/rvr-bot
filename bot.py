@@ -1344,7 +1344,13 @@ async def wordleboard_cmd(ctx, mode: str = "today"):
     if mode.lower() == "classic":
         solves = daily.get("modes", {}).get("classic", {}).get("solves", [])
         if solves:
-            solves.sort(key=lambda x: (x.get("guesses", 6), x.get("time", float('inf')))
+            # Sort by guesses first, then by time
+            def sort_key(x):
+                guesses = x.get("guesses", 6)
+                time_val = x.get("time", float('inf'))
+                return (guesses, time_val)
+            solves.sort(key=sort_key)
+            
             for i, solve in enumerate(solves[:10]):
                 user = await bot.fetch_user(solve["uid"])
                 username = user.name if user else f"User {solve['uid']}"
@@ -1360,7 +1366,11 @@ async def wordleboard_cmd(ctx, mode: str = "today"):
         players = daily.get("modes", {}).get("race", {}).get("players", [])
         solved_players = [p for p in players if p.get("solved", False)]
         if solved_players:
-            solved_players.sort(key=lambda x: x.get("solveTime", float('inf')))
+            # Sort by solve time
+            def race_sort_key(x):
+                return x.get("solveTime", float('inf'))
+            solved_players.sort(key=race_sort_key)
+            
             for i, player in enumerate(solved_players[:10]):
                 user = await bot.fetch_user(player["uid"])
                 username = user.name if user else f"User {player['uid']}"
@@ -1375,7 +1385,11 @@ async def wordleboard_cmd(ctx, mode: str = "today"):
     elif mode.lower() == "timeattack":
         entries = daily.get("modes", {}).get("timeattack", {}).get("entries", [])
         if entries:
-            entries.sort(key=lambda x: x.get("timeMs", float('inf')))
+            # Sort by time in milliseconds
+            def time_sort_key(x):
+                return x.get("timeMs", float('inf'))
+            entries.sort(key=time_sort_key)
+            
             for i, entry in enumerate(entries[:10]):
                 user = await bot.fetch_user(entry["uid"])
                 username = user.name if user else f"User {entry['uid']}"
