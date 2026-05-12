@@ -1249,10 +1249,10 @@ async def wordle_cmd(ctx):
                     description="Click below to play the multiplayer Wordle game!",
                     color=discord.Color.blue()
                 )
-                frontend_url = os.environ.get("WORDLE_FRONTEND_URL", "http://localhost:5173")
+                backend_url = os.environ.get("WORDLE_BACKEND_URL", "http://localhost:3001")
                 embed.add_field(
                     name="🏎️ Play Now",
-                    value=f"[Click here to play]({frontend_url}?token={web_token})",
+                    value=f"[Click here to play]({backend_url}?token={web_token})",
                     inline=False
                 )
                 embed.set_footer(text="Token expires in 1 hour")
