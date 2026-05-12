@@ -3,11 +3,11 @@
 
 [deploy]
   startCommand = "npm start"
-  healthcheckPath = "/api/daily-word"
+  healthcheckPath = "/health"
   healthcheckTimeout = 100
   restartPolicyType = "on_failure"
   restartPolicyMaxRetries = 10
+  port = 3001
 
 [env]
   NODE_ENV = "production"
-  PORT = "3001"
