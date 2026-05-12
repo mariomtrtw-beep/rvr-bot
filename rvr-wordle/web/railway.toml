@@ -6,6 +6,7 @@
   healthcheckPath = "/"
   healthcheckTimeout = 100
   staticPublishPath = "dist"
+  routingMode = "single"
 
 [env]
   NODE_ENV = "production"
