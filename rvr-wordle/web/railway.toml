@@ -2,7 +2,7 @@
   builder = "nixpacks"
 
 [deploy]
-  startCommand = "npm run build && npx serve dist -p 8080"
+  startCommand = "npm run build && npx serve dist -p 8080 -s"
   port = 8080
   healthcheckPath = "/"
   healthcheckTimeout = 100
