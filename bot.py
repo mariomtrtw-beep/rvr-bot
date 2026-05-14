@@ -1444,27 +1444,91 @@ async def predict(ctx, member: discord.Member):
 async def roast(ctx, member: discord.Member):
     import random
     name = member.display_name
+
+    personal_roasts = {
+        "d.olo": [
+            "D.olo lost and then spent 10 minutes explaining why it was actually smart. Peak French.",
+            "D.olo drives like someone who read a book about racing and hasn't forgiven anyone for it.",
+            "D.olo will finish last and somehow make you feel bad about winning. The audacity is genuinely impressive.",
+            "D.olo is French. He surrendered to the corner before he even got there.",
+            "D.olo's biggest opponent isn't the other team. It's his own ego trying to fit in the car.",
+        ],
+        "boban": [
+            "Boban plays like he's settling a blood debt with the track and the track owes him nothing.",
+            "Boban disconnects, comes back, and is somehow angrier. Every single time. The man is a war.",
+            "Boban is Serbian which means he won't admit he lost even when he's watching the winner's replay.",
+            "Boban's race strategy is just aggression with extra steps and zero results.",
+            "Serbia produced Nikola Tesla. And then Boban. One of these men changed the world. The other hits walls.",
+        ],
+        "t0x1c": [
+            "t0x1c said something in VC that made three people go quiet. He also finished 7th. Both things matter.",
+            "t0x1c has no filter and no podium. One of those is fixable.",
+            "The scariest part about t0x1c isn't what he says — it's that he means it and still finishes last.",
+            "t0x1c talks like he has zero fear. Drives like he has zero spatial awareness. Both confirmed.",
+            "t0x1c is the only player who can lose a race and somehow make it everyone else's fault in real time.",
+        ],
+        "goxi": [
+            "Goxi went full Anakin mid-race and took out two teammates. The prophecy was always real.",
+            "Goxi has two names and zero podiums. Pick a lane. Any lane. Please.",
+            "Two Serbians in one lobby is already a diplomatic incident. Goxi shows up anyway.",
+            "Goxi's driving is so aggressive the Geneva Convention sent a letter.",
+            "Goxi said he was built different. He is. Just not in the direction he meant.",
+        ],
+        "laggeerok": [
+            "Laggeerok's connection is so bad the server registers his inputs as war crimes.",
+            "Laggeerok finished the race 4 seconds after everyone. On his screen he won. He believes it.",
+            "Ukraine has been through a lot. Laggeerok's internet is not helping the situation.",
+            "Laggeerok's ping is so high it qualifies as a separate player.",
+            "Laggeerok teleports through corners. Not a feature. Not fast. Somehow still loses.",
+        ],
+        "zipperzbieracz": [
+            "ZipperZbieracz calls himself high IQ and then overcuts the same corner every lap. This is what chess players look like in real life.",
+            "ZipperZbieracz spent 20 minutes post-race explaining why losing was the smart play. It was not the smart play.",
+            "High IQ. Low IQ race line. The paradox that defines ZipperZbieracz continues unresolved.",
+            "ZipperZbieracz analyzes every race like a scientist and drives like someone with their eyes closed.",
+            "ZipperZbieracz called his own move 5D chess. It was a crash into a stationary wall.",
+        ],
+        "topke": [
+            "Topke is Serbian which already explains everything about his driving style and nothing about why he keeps queuing.",
+            "Three Serbians in one lobby. Topke is somehow the most unhinged one and that is genuinely saying something.",
+            "Topke shows up every race with full confidence and a completely different result than expected. Always worse.",
+            "Topke's race performance is unpredictable in the worst possible way. Could be 1st. Always 8th.",
+        ],
+        "azaria": [
+            "Azaria is the only player whose pre-race ritual involves moisturizer.",
+            "Azaria loses races but at least he looks good doing it. Small victories.",
+            "Azaria drives with passion. Unfortunately passion doesn't corner well.",
+            "Azaria finished last and said the vibes were off. The vibes were fine. He was not.",
+        ],
+    }
+
+    name_lower = name.lower()
+    specific = next((v for k, v in personal_roasts.items() if k in name_lower or name_lower in k), None)
+    if specific:
+        await ctx.send(random.choice(specific))
+        return
+
     roasts = [
-        f"{name} is the human equivalent of a DNF.",
-        f"I've seen {name}'s replays. So has a therapist.",
-        f"{name} doesn't have bad races. {name} IS the bad race.",
-        f"The barriers on every track have a special name for {name}. A pet name. They see them that often.",
-        f"{name} finished last so many times the game started auto-filling their name in the loser bracket.",
-        f"Bro {name} got rated so low by the bot even the default players outrank them.",
-        f"{name} talks about their one good race more than most people talk about their kids.",
-        f"Scientists confirmed {name}'s race line violates three laws of physics and one restraining order.",
-        f"{name} is the reason the team lost. I don't know which race. Pick one.",
-        f"{name} has the reaction time of a JPEG.",
-        f"The only thing {name} carries is the team's morale — straight into the ground.",
-        f"{name} blames lag so much their ISP sent them a personal apology. It didn't help.",
-        f"Watching {name} drive is genuinely the fastest way to lose faith in humanity.",
-        f"{name}'s car setup looks like it was configured by someone having a medical emergency.",
-        f"I asked {name} for their race strategy. They said 'just feel it out'. That explains everything.",
-        f"{name} plays like they're being paid to lose and haven't been paid in months.",
-        f"At this point the walls deserve a podium finish more than {name}.",
-        f"{name} rage quit so fast last time the server thought they won.",
-        f"Fun fact: {name} has spent more time in spectator mode than most people spend sleeping.",
-        f"{name} is genuinely the hardest player to have on your team. And not in a good way.",
+        f"Winning against {name} doesn't count. Losing to {name} is a psychiatric event.",
+        f"We don't use {name} as a benchmark for bad. It would be unfair to bad.",
+        f"The saddest part about {name}'s performance isn't the result — it's the confidence beforehand.",
+        f"Opponents don't celebrate beating {name}. It's like celebrating a bye week.",
+        f"{name} has been playing this game long enough to be good. Chose not to.",
+        f"Teammates pick {name} last. Opponents pray they get {name}.",
+        f"The moment {name} says 'I'm focused tonight' is when you start grieving as a teammate.",
+        f"{name} treats team races like a solo activity and somehow still loses.",
+        f"Every time {name} joins a lobby the average skill rating goes down and stays down.",
+        f"{name} finished behind everyone and still found someone to blame. Respect the commitment.",
+        f"Losing to {name} should come with a medical referral.",
+        f"I checked {name}'s stats and the database returned a warning. Even MongoDB felt bad.",
+        f"{name} is so consistently bad at this point we genuinely think it's a bit. It's not a bit.",
+        f"{name} is a 50/50 player — either they cost you the race or they cost you two.",
+        f"The barrier on turn 3 has {name} saved as a contact.",
+        f"Nobody hypes up a race harder than {name}. Nobody disappears faster after.",
+        f"{name}'s car isn't the problem. The car has been trying to escape for months.",
+        f"There are players who choke under pressure and players who choke without it. {name} innovated the second category.",
+        f"The opposing team specifically requested {name}. That should tell you everything.",
+        f"{name} is the only player who makes the other team feel bad for winning.",
     ]
     await ctx.send(random.choice(roasts))
 
