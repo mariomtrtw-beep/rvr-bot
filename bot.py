@@ -1413,6 +1413,60 @@ async def wordleboard_cmd(ctx, mode: str = "today"):
     
     await ctx.send(embed=embed)
 
+@bot.command(name="predict")
+async def predict(ctx, member: discord.Member):
+    import random
+    name = member.display_name
+    predictions = [
+        f"{name} will either win by 10 seconds or disconnect. No in between.",
+        f"The stars align for {name} tonight. Unfortunately they align directly into a wall.",
+        f"My sources tell me {name} has been practicing. My sources are liars.",
+        f"Bold prediction: {name} finishes exactly where nobody expected. Even {name}.",
+        f"{name} is going to have one of those races. You know the ones.",
+        f"Tonight {name} becomes unstoppable. Tomorrow they blame lag.",
+        f"{name} will carry the team. Straight into last place.",
+        f"I'm seeing a podium finish for {name}. On the other team's scoreboard.",
+        f"{name} has a 73% chance of greatness tonight and a 100% chance of blaming their controller.",
+        f"When {name} says 'I'm warmed up', everyone should be worried. Mostly {name}.",
+        f"{name} tonight: fast in the straights, one with the walls in the corners.",
+        f"The battery gods smile upon {name} this evening. It won't help.",
+        f"An MVP performance from {name} is incoming. Just not sure for which team.",
+        f"{name} will post a time that makes everyone go quiet. Whether impressive or painful — unknown.",
+        f"My prediction: {name} will clip that one corner. Every. Single. Lap.",
+        f"{name} enters tonight as the dark horse. Mainly because nobody can predict what they'll do, including {name}.",
+        f"History books will remember what {name} does tonight. For various reasons.",
+        f"{name} is locked in. The question is whether they're locked into the race or into a barrier.",
+    ]
+    await ctx.send(random.choice(predictions))
+
+
+@bot.command(name="roast")
+async def roast(ctx, member: discord.Member):
+    import random
+    name = member.display_name
+    roasts = [
+        f"{name}'s racing line can best be described as 'guided by vibes'.",
+        f"{name} has finished in the top 3 exactly once. They bring it up every session.",
+        f"Scientists studied {name}'s race lines and concluded they were 'a cry for help'.",
+        f"Watching {name} take corners is like watching someone parallel park for the first time. Every time.",
+        f"{name} be like 'bad spawn' after qualifying last.",
+        f"{name}'s car setup is optimized for one thing: collecting walls.",
+        f"I've seen {name}'s replay. The track designer wants an apology.",
+        f"{name} treats every race like a sightseeing tour. Scenic route, every lap.",
+        f"NASA calculated the probability of {name} hitting that specific wall. Somehow it's 100%.",
+        f"{name} is genuinely quick. Just not during races.",
+        f"{name} and consistency are not on speaking terms.",
+        f"Respect to {name} for always showing up. The barriers respect them too — they see them the most.",
+        f"{name} calls it 'aggressive driving'. The rulebook calls it something else.",
+        f"When {name} has a good race they won't shut up about it for three sessions. They have not had a good race recently.",
+        f"{name} has a unique strategy: start strong, fade immediately, blame the car.",
+        f"Teammates love {name}. Mostly because they make everyone else look better.",
+        f"{name}'s reaction time is elite. It's just that they're reacting to what happened two corners ago.",
+        f"The good news: {name} is getting better. The bad news: so is everyone else, faster.",
+    ]
+    await ctx.send(random.choice(roasts))
+
+
 @bot.command(name="setvotes")
 @commands.has_permissions(manage_guild=True)
 async def set_votes(ctx):
