@@ -35,6 +35,7 @@ wordle_daily_col = db["wordle_daily"]
 wordle_users_col  = db["wordle_users"]
 
 GATHER_CHANNEL   = "Gather"
+DEV_CHANNEL      = "development"
 DEFAULT_RATING   = 0.80
 
 SEED_RATINGS = [
@@ -100,6 +101,13 @@ intents.members = True
 
 bot     = commands.Bot(command_prefix="!", intents=intents)
 pending = {}  # approval_msg_id -> submission dict
+
+def admin_or_dev():
+    async def predicate(ctx):
+        if ctx.channel.name == DEV_CHANNEL:
+            return True
+        return ctx.author.guild_permissions.manage_guild
+    return commands.check(predicate)
 
 # ── Events ────────────────────────────────────────────────────────────────────
 @bot.event
@@ -333,7 +341,7 @@ async def tracks_cmd(ctx):
     await ctx.send(embed=embed)
 
 @bot.command(name="removetrack")
-@commands.has_permissions(manage_guild=True)
+@admin_or_dev()
 async def remove_track(ctx, *, track_name: str):
     track_name = track_name.title()
     cycle      = await get_current_cycle()
@@ -345,7 +353,7 @@ async def remove_track(ctx, *, track_name: str):
     await update_leaderboard(ctx.guild)
 
 @bot.command(name="removetime")
-@commands.has_permissions(manage_guild=True)
+@admin_or_dev()
 async def remove_time(ctx, member: discord.Member, *, track_name: str):
     track_name = track_name.title()
     cycle      = await get_current_cycle()
@@ -934,7 +942,7 @@ def build_standings(ranked: list, mention: bool) -> tuple[str, str, str]:
 
 
 @bot.command(name="previewmonth")
-@commands.has_permissions(manage_guild=True)
+@admin_or_dev()
 async def preview_month(ctx):
     cycle    = await get_current_cycle()
     all_data = await get_all_data(cycle)
@@ -1005,7 +1013,7 @@ async def preview_month(ctx):
 
 
 @bot.command(name="closemonth")
-@commands.has_permissions(manage_guild=True)
+@admin_or_dev()
 async def close_month(ctx):
     cycle    = await get_current_cycle()
     all_data = await get_all_data(cycle)
@@ -1122,7 +1130,7 @@ async def close_month(ctx):
     )
 
 @bot.command(name="listmembers")
-@commands.has_permissions(manage_guild=True)
+@admin_or_dev()
 async def list_members(ctx):
     members = [m for m in ctx.guild.members if not m.bot]
     members.sort(key=lambda m: m.display_name.lower())
@@ -1132,7 +1140,7 @@ async def list_members(ctx):
 
 
 @bot.command(name="cleanratings")
-@commands.has_permissions(manage_guild=True)
+@admin_or_dev()
 async def clean_ratings(ctx):
     result = await ratings_col.delete_many({"rating": {"$gt": 1.5}})
     await ctx.author.send(f"✅ Removed {result.deleted_count} bad rating entries.")
@@ -1140,7 +1148,7 @@ async def clean_ratings(ctx):
 
 
 @bot.command(name="seedratings")
-@commands.has_permissions(manage_guild=True)
+@admin_or_dev()
 async def seed_ratings(ctx):
     for name, rating in SEED_RATINGS:
         await ratings_col.update_one(
@@ -1153,7 +1161,7 @@ async def seed_ratings(ctx):
 
 
 @bot.command(name="setrating")
-@commands.has_permissions(manage_guild=True)
+@admin_or_dev()
 async def set_rating(ctx, member: discord.Member, rating: float):
     await ratings_col.update_one(
         {"uid": member.id},
@@ -1164,7 +1172,7 @@ async def set_rating(ctx, member: discord.Member, rating: float):
 
 
 @bot.command(name="ratings")
-@commands.has_permissions(manage_guild=True)
+@admin_or_dev()
 async def show_ratings(ctx):
     all_ratings = await ratings_col.find().sort("rating", -1).to_list(None)
     if not all_ratings:
@@ -1177,7 +1185,7 @@ async def show_ratings(ctx):
 
 
 @bot.command(name="maketeams")
-@commands.has_permissions(manage_guild=True)
+@admin_or_dev()
 async def make_teams(ctx):
     vc = discord.utils.get(ctx.guild.voice_channels, name=GATHER_CHANNEL)
     if not vc:
@@ -1534,7 +1542,7 @@ async def roast(ctx, member: discord.Member):
 
 
 @bot.command(name="setvotes")
-@commands.has_permissions(manage_guild=True)
+@admin_or_dev()
 async def set_votes(ctx):
     ch = discord.utils.get(ctx.guild.text_channels, name=TEAM_RACE_CHANNEL)
     if not ch:
