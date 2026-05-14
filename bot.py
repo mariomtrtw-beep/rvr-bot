@@ -18,6 +18,7 @@ SUBMISSION_CHANNEL      = "time-submissions"
 APPROVAL_CHANNEL        = "admin-approvals"
 LEADERBOARD_CHANNEL     = "leaderboard"
 MONTHLY_RESULTS_CHANNEL = "monthly-results"
+TEAM_RACE_CHANNEL       = "team-race-chat"
 
 POINTS = [15, 12, 10, 8, 7, 6, 5, 4, 3, 2, 1]
 
@@ -1411,6 +1412,29 @@ async def wordleboard_cmd(ctx, mode: str = "today"):
         embed.description = "Available modes: `today`, `classic`, `race`, `timeattack`"
     
     await ctx.send(embed=embed)
+
+@bot.command(name="setvotes")
+@commands.has_permissions(manage_guild=True)
+async def set_votes(ctx):
+    ch = discord.utils.get(ctx.guild.text_channels, name=TEAM_RACE_CHANNEL)
+    if not ch:
+        await ctx.send(f"❌ Channel `#{TEAM_RACE_CHANNEL}` not found.")
+        return
+
+    pepeyes = discord.utils.get(ctx.guild.emojis, name="pepeyes")
+    pepeno  = discord.utils.get(ctx.guild.emojis, name="pepeno")
+
+    if not pepeyes or not pepeno:
+        await ctx.send("❌ Could not find `:pepeyes:` or `:pepeno:` emojis in this server.")
+        return
+
+    msg = await ch.send("**Are you happy with the teams?**")
+    await msg.add_reaction(pepeyes)
+    await msg.add_reaction(pepeno)
+
+    if ctx.channel != ch:
+        await ctx.message.delete()
+
 
 @bot.command(name="rvrhelp")
 async def rvr_help(ctx):
