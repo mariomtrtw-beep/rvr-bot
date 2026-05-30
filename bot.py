@@ -121,7 +121,7 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    if message.channel.name == SUBMISSION_CHANNEL and not message.content.startswith("!"):
+    if message.channel.name == SUBMISSION_CHANNEL and message.content.lower().startswith("track:"):
         if not message.attachments:
             await message.reply("❌ Please attach a screenshot as proof with your submission!")
             return
@@ -233,9 +233,12 @@ async def on_reaction_add(reaction, user):
 
         sub_ch = guild.get_channel(sub["submission_channel_id"])
         if sub_ch:
-            member  = guild.get_member(uid)
-            mention = member.mention if member else sub["user"]
-            await sub_ch.send(f"✅ {mention} your time **{time_str}** on **{track}** has been approved!")
+            member   = guild.get_member(uid)
+            mention  = member.mention if member else sub["user"]
+            entries  = await get_track_entries(track, cycle)
+            position = next((i + 1 for i, e in enumerate(entries) if e["uid"] == uid), None)
+            place_str = f" You are **#{position}** on {track}." if position else ""
+            await sub_ch.send(f"✅ {mention} your time **{time_str}** on **{track}** has been approved!{place_str}")
 
         await reaction.message.edit(content="✅ Approved!")
         await reaction.message.clear_reactions()
