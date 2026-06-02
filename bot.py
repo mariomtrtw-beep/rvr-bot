@@ -965,11 +965,11 @@ async def preview_month(ctx):
         await ctx.send("No times submitted this month yet.")
         return
 
-    now = datetime.now(timezone.utc)
-    if now.month == 12:
-        next_month_name = datetime(now.year + 1, 1, 1, tzinfo=timezone.utc).strftime("%B")
+    cycle_dt = datetime.strptime(cycle, "%B %Y")
+    if cycle_dt.month == 12:
+        next_month_name = datetime(cycle_dt.year + 1, 1, 1).strftime("%B")
     else:
-        next_month_name = datetime(now.year, now.month + 1, 1, tzinfo=timezone.utc).strftime("%B")
+        next_month_name = datetime(cycle_dt.year, cycle_dt.month + 1, 1).strftime("%B")
 
     winner_name = ranked[0]["user"] if ranked else "nobody"
 
@@ -1054,12 +1054,13 @@ async def close_month(ctx):
         color=0xFFD700
     )
 
-    # Build next month name for the closing message
-    now = datetime.now(timezone.utc)
-    if now.month == 12:
-        next_month_name = datetime(now.year + 1, 1, 1, tzinfo=timezone.utc).strftime("%B")
+    # Build next month name from the cycle name, not today's date
+    cycle_dt = datetime.strptime(cycle, "%B %Y")
+    if cycle_dt.month == 12:
+        next_cycle_dt = datetime(cycle_dt.year + 1, 1, 1)
     else:
-        next_month_name = datetime(now.year, now.month + 1, 1, tzinfo=timezone.utc).strftime("%B")
+        next_cycle_dt = datetime(cycle_dt.year, cycle_dt.month + 1, 1)
+    next_month_name = next_cycle_dt.strftime("%B")
 
     months_role   = discord.utils.get(ctx.guild.roles, name="Months")
     role_ping     = months_role.mention if months_role else ""
@@ -1116,11 +1117,8 @@ async def close_month(ctx):
     now = datetime.now(timezone.utc)
     await cycles_col.update_one({"active": True}, {"$set": {"active": False, "closed_at": now}})
 
-    # Start next cycle (next calendar month)
-    if now.month == 12:
-        new_cycle_name = datetime(now.year + 1, 1, 1, tzinfo=timezone.utc).strftime("%B %Y")
-    else:
-        new_cycle_name = datetime(now.year, now.month + 1, 1, tzinfo=timezone.utc).strftime("%B %Y")
+    # Start next cycle derived from the closed cycle name
+    new_cycle_name = next_cycle_dt.strftime("%B %Y")
 
     await cycles_col.insert_one({"name": new_cycle_name, "active": True, "started_at": now})
 
