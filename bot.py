@@ -1144,13 +1144,6 @@ async def rename_cycle(ctx, *, new_name: str):
     # Refresh leaderboard with correct name
     await update_leaderboard(ctx.guild)
 
-    # Post correction in #monthly-results
-    results_ch = discord.utils.get(ctx.guild.text_channels, name=MONTHLY_RESULTS_CHANNEL)
-    if results_ch:
-        await results_ch.send(
-            f"📝 **Correction:** The current cycle has been renamed from **{cycle}** to **{new_name}**."
-        )
-
     await ctx.send(f"✅ Cycle renamed from **{cycle}** to **{new_name}**. Leaderboard updated.")
 
 
