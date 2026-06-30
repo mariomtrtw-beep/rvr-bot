@@ -102,15 +102,19 @@ intents.members = True
 bot     = commands.Bot(command_prefix="!", intents=intents)
 pending = {}  # approval_msg_id -> submission dict
 
+def is_staff(member) -> bool:
+    """True if the member is an admin (manage_guild) or has the moderator role."""
+    if member.guild_permissions.manage_guild:
+        return True
+    if discord.utils.get(member.roles, name="moderator"):
+        return True
+    return False
+
 def admin_or_dev():
     async def predicate(ctx):
         if ctx.channel.name == DEV_CHANNEL:
             return True
-        if ctx.author.guild_permissions.manage_guild:
-            return True
-        if discord.utils.get(ctx.author.roles, name="moderator"):
-            return True
-        return False
+        return is_staff(ctx.author)
     return commands.check(predicate)
 
 # ── Events ────────────────────────────────────────────────────────────────────
@@ -184,7 +188,7 @@ async def on_reaction_add(reaction, user):
         return
     if reaction.message.id not in pending:
         return
-    if not user.guild_permissions.manage_guild:
+    if not is_staff(user):
         return
 
     sub   = pending.pop(reaction.message.id)
