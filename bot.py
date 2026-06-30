@@ -106,7 +106,7 @@ def is_staff(member) -> bool:
     """True if the member is an admin (manage_guild) or has the moderator role."""
     if member.guild_permissions.manage_guild:
         return True
-    if discord.utils.get(member.roles, name="moderator"):
+    if any(r.name.lower() == "moderator" for r in member.roles):
         return True
     return False
 
