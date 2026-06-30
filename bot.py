@@ -106,7 +106,11 @@ def admin_or_dev():
     async def predicate(ctx):
         if ctx.channel.name == DEV_CHANNEL:
             return True
-        return ctx.author.guild_permissions.manage_guild
+        if ctx.author.guild_permissions.manage_guild:
+            return True
+        if discord.utils.get(ctx.author.roles, name="moderator"):
+            return True
+        return False
     return commands.check(predicate)
 
 # ── Events ────────────────────────────────────────────────────────────────────
