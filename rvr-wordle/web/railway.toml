@@ -1,9 +1,0 @@
-[build]
-  builder = "nixpacks"
-
-[deploy]
-  startCommand = "npm run build"
-
-[env]
-  NODE_ENV = "production"
-  VITE_API_URL = "https://worker-production-cbde.up.railway.app"

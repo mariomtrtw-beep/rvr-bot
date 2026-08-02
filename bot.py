@@ -4,8 +4,6 @@ import os
 import re
 import asyncio
 import io
-import jwt
-import requests
 from datetime import datetime, timezone
 from motor.motor_asyncio import AsyncIOMotorClient
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
@@ -31,8 +29,6 @@ times_col    = db["times"]
 cycles_col   = db["cycles"]
 medals_col   = db["medals"]
 ratings_col  = db["ratings"]
-wordle_daily_col = db["wordle_daily"]
-wordle_users_col  = db["wordle_users"]
 
 GATHER_CHANNEL   = "Gather"
 DEV_CHANNEL      = "development"
@@ -1250,203 +1246,6 @@ async def make_teams(ctx):
     await ctx.send(embed=embed)
 
 
-@bot.command(name="wordle", aliases=["w"])
-async def wordle_cmd(ctx):
-    """Launch RVR-Wordle web app with auto-login"""
-    import jwt
-    import requests
-    
-    # Generate JWT token for user
-    import datetime
-    payload = {
-        "uid": ctx.author.id,
-        "username": ctx.author.name,
-        "avatar": str(ctx.author.avatar.url) if ctx.author.avatar else None,
-        "source": "bot",
-        "exp": datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
-    }
-    token = jwt.encode(payload, os.environ.get("JWT_SECRET", "fallback_secret"), algorithm="HS256")
-    
-    # Send to Wordle backend to store/verify
-    try:
-        backend_url = os.environ.get("WORDLE_BACKEND_URL", "http://localhost:3001")
-        response = requests.post(
-            f"{backend_url}/api/generate-token",
-            json={"uid": ctx.author.id, "username": ctx.author.name},
-            timeout=5
-        )
-        if response.status_code == 200:
-            web_token = response.json().get("token")
-            if web_token:
-                # Create ephemeral message with Play button
-                embed = discord.Embed(
-                    title="🎮 RVR-Wordle",
-                    description="Click below to play the multiplayer Wordle game!",
-                    color=discord.Color.blue()
-                )
-                backend_url = os.environ.get("WORDLE_BACKEND_URL", "http://localhost:3001")
-                embed.add_field(
-                    name="🏎️ Play Now",
-                    value=f"[Click here to play]({backend_url}?token={web_token})",
-                    inline=False
-                )
-                embed.set_footer(text="Token expires in 1 hour")
-                await ctx.send(embed=embed, ephemeral=True)
-            else:
-                await ctx.send("❌ Failed to generate game token", ephemeral=True)
-        else:
-            await ctx.send("❌ Wordle server unavailable", ephemeral=True)
-    except Exception as e:
-        await ctx.send("❌ Failed to connect to Wordle server", ephemeral=True)
-
-@bot.command(name="wordlestats")
-async def wordlestats_cmd(ctx, member: discord.Member = None):
-    """Show Wordle stats for user"""
-    if not member:
-        member = ctx.author
-    
-    # Get user stats from Wordle database
-    user_stats = await wordle_users_col.find_one({"uid": member.id})
-    
-    if not user_stats:
-        embed = discord.Embed(
-            title=f"📊 Wordle Stats for {member.name}",
-            description="No Wordle games played yet!",
-            color=discord.Color.orange()
-        )
-        embed.add_field(name="🎮 Start Playing", value="Type `!wordle` to begin!", inline=False)
-        await ctx.send(embed=embed)
-        return
-    
-    stats = user_stats.get("stats", {})
-    classic = stats.get("classic", {})
-    race = stats.get("race", {})
-    battle = stats.get("battle", {})
-    timeattack = stats.get("timeattack", {})
-    
-    embed = discord.Embed(
-        title=f"📊 Wordle Stats for {member.name}",
-        color=discord.Color.purple()
-    )
-    
-    # Classic stats
-    embed.add_field(
-        name="🎯 Classic Mode",
-        value=f"**{classic.get('wins', 0)}/{classic.get('played', 0)}** wins\n🔥 Streak: {classic.get('streak', 0)}",
-        inline=True
-    )
-    
-    # Race stats
-    embed.add_field(
-        name="🏁 Race Mode",
-        value=f"**{race.get('wins', 0)}/{race.get('played', 0)}** wins\n🎯 First Bloods: {race.get('firstBloods', 0)}",
-        inline=True
-    )
-    
-    # Battle stats
-    embed.add_field(
-        name="⚔️ Battle Mode",
-        value=f"**{battle.get('wins', 0)}/{battle.get('played', 0)}** wins\n🛢️ Oil Used: {battle.get('oilUsed', 0)}",
-        inline=True
-    )
-    
-    # Time attack stats
-    embed.add_field(
-        name="⏱️ Time Attack",
-        value=f"**{timeattack.get('played', 0)}** games played",
-        inline=True
-    )
-    
-    # Achievements
-    achievements = user_stats.get("achievements", [])
-    if achievements:
-        achievement_text = " ".join([f"🏆" for _ in achievements])
-        embed.add_field(name="🏆 Achievements", value=achievement_text, inline=False)
-    
-    await ctx.send(embed=embed)
-
-@bot.command(name="wordleboard")
-async def wordleboard_cmd(ctx, mode: str = "today"):
-    """Show Wordle leaderboard"""
-    # Get today's data
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    daily = await wordle_daily_col.find_one({"date": today})
-    
-    if not daily:
-        await ctx.send("❌ No Wordle data for today")
-        return
-    
-    embed = discord.Embed(
-        title=f"🏆 Wordle Leaderboard - {mode.title()}",
-        color=discord.Color.gold()
-    )
-    
-    if mode.lower() == "classic":
-        solves = daily.get("modes", {}).get("classic", {}).get("solves", [])
-        if solves:
-            # Sort by guesses first, then by time
-            def sort_key(x):
-                guesses = x.get("guesses", 6)
-                time_val = x.get("time", float('inf'))
-                return (guesses, time_val)
-            solves.sort(key=sort_key)
-            
-            for i, solve in enumerate(solves[:10]):
-                user = await bot.fetch_user(solve["uid"])
-                username = user.name if user else f"User {solve['uid']}"
-                embed.add_field(
-                    name=f"#{i+1} {username}",
-                    value=f"**{solve.get('guesses', 6)}** guesses",
-                    inline=True
-                )
-        else:
-            embed.description = "No classic solves today"
-    
-    elif mode.lower() == "race":
-        players = daily.get("modes", {}).get("race", {}).get("players", [])
-        solved_players = [p for p in players if p.get("solved", False)]
-        if solved_players:
-            # Sort by solve time
-            def race_sort_key(x):
-                return x.get("solveTime", float('inf'))
-            solved_players.sort(key=race_sort_key)
-            
-            for i, player in enumerate(solved_players[:10]):
-                user = await bot.fetch_user(player["uid"])
-                username = user.name if user else f"User {player['uid']}"
-                embed.add_field(
-                    name=f"#{i+1} {username}",
-                    value=f"**{player.get('guesses', 6)}** guesses ⏱️ {player.get('solveTime', 0)//1000}s",
-                    inline=True
-                )
-        else:
-            embed.description = "No race winners today"
-    
-    elif mode.lower() == "timeattack":
-        entries = daily.get("modes", {}).get("timeattack", {}).get("entries", [])
-        if entries:
-            # Sort by time in milliseconds
-            def time_sort_key(x):
-                return x.get("timeMs", float('inf'))
-            entries.sort(key=time_sort_key)
-            
-            for i, entry in enumerate(entries[:10]):
-                user = await bot.fetch_user(entry["uid"])
-                username = user.name if user else f"User {entry['uid']}"
-                time_sec = entry.get("timeMs", 0) / 1000
-                embed.add_field(
-                    name=f"#{i+1} {username}",
-                    value=f"⏱️ **{time_sec:.2f}s** ({entry.get('guesses', 0)} guesses)",
-                    inline=True
-                )
-        else:
-            embed.description = "No time attack entries today"
-    
-    else:
-        embed.description = "Available modes: `today`, `classic`, `race`, `timeattack`"
-    
-    await ctx.send(embed=embed)
-
 @bot.command(name="predict")
 async def predict(ctx, member: discord.Member):
     import random
@@ -1593,7 +1392,6 @@ async def set_votes(ctx):
 @bot.command(name="rvrhelp")
 async def rvr_help(ctx):
     embed = discord.Embed(title="🤖 RVR Bot Commands", color=discord.Color.blurple())
-    embed.add_field(name="🏎️ Wordle Commands", value="**!wordle** - Play multiplayer Wordle game\n**!wordlestats [@user]** - Show Wordle stats\n**!wordleboard [mode]** - Show Wordle leaderboard", inline=False)
     embed.add_field(name="!leaderboard (or !lb)", value="Show the full leaderboard for the current month", inline=False)
     embed.add_field(name="!mystats",              value="Show your personal stats for the current month", inline=False)
     embed.add_field(name="!tracks",               value="List all tracks with times this month", inline=False)
