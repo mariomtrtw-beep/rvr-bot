@@ -989,6 +989,15 @@ async def refresh_boards(channel, tracks) -> dict:
     return counts
 
 
+SESSION_NAME = "RVRU"      # only lobbies with this in the name are ours
+
+
+def is_ours(session_name) -> bool:
+    """net.rv.gl is shared with the whole community, so never touch a lobby
+    that is not clearly ours."""
+    return SESSION_NAME.casefold() in (session_name or "").casefold()
+
+
 def live_sessions() -> list:
     """Current sessions from the coordinator's event stream (first frame)."""
     for frame in read_frames():
@@ -1036,19 +1045,25 @@ async def b3l_cmd(ctx):
             await ctx.send(f"❌ Could not reach the coordinator: `{e.__class__.__name__}`")
             return
 
-    usable = [s for s in sessions if s.get("id")]
+    ours = [s for s in sessions if is_ours(s.get("name"))]
+    usable = [s for s in ours if s.get("id")]
+
     if not usable:
-        hidden = len(sessions) - len(usable)
-        note = (f" ({hidden} private one(s) are up, but private sessions expose no id)"
-                if hidden else "")
-        await ctx.send(f"❌ No public session is live right now{note}.")
+        if ours:
+            await ctx.send(f"❌ Found **{ours[0].get('name')}** but it is private — "
+                           f"a private session exposes no id, so its results cannot be "
+                           f"read. Make it public and run `!b3l` again.")
+        else:
+            other = f" ({len(sessions)} other session(s) up, ignored)" if sessions else ""
+            await ctx.send(f"❌ No **{SESSION_NAME}** session is live{other}. "
+                           f"Put `{SESSION_NAME}` in the lobby name.")
         return
 
     if len(usable) > 1:
         listing = "\n".join(f"`{s['id']}` — **{s.get('name','?')}** "
                             f"({s.get('player_count', '?')} players)" for s in usable[:10])
-        await ctx.send(f"⚠️ {len(usable)} public sessions are live — "
-                       f"run `!ingest <id>` with the right one:\n{listing}")
+        await ctx.send(f"⚠️ {len(usable)} **{SESSION_NAME}** sessions are live — "
+                       f"pick one with `!ingest <id>`:\n{listing}")
         return
 
     listed = usable[0]
@@ -1108,6 +1123,10 @@ async def ingest_cmd(ctx, session_ref: str = ""):
             return
     if session is None:
         await ctx.send("❌ That session is gone — the coordinator drops them once they close.")
+        return
+    if not is_ours(session.get("Name")):
+        await ctx.send(f"❌ **{session.get('Name')}** is not an {SESSION_NAME} session — "
+                       f"not importing someone else's races.")
         return
 
     races  = apply_race_rules(races_from(session))
