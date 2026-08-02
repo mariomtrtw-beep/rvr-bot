@@ -3,12 +3,15 @@ from discord.ext import commands
 import os
 import re
 import io
+import asyncio
 from datetime import datetime, timezone
 from motor.motor_asyncio import AsyncIOMotorClient
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 # Shared with the result ingest so a name normalises identically on both sides.
 from rvgl_results import name_key
+from coordinator_ingest import (apply_rules as apply_race_rules, fetch_session,
+                                ms_to_time, races_from)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 TOKEN     = os.environ["DISCORD_TOKEN"]
@@ -23,7 +26,8 @@ db           = mongo_client["rvr_underground"]
 ratings_col  = db["ratings"]
 aliases_col  = db["aliases"]      # in-game name -> discord user
 skips_col    = db["link_skips"]   # names deliberately left unlinked
-racers_col   = db["racers"]       # in-game names seen in real results
+races_col    = db["races"]        # every race ingested, one doc per GameID
+boards_col   = db["track_boards"] # the posted message we edit per track
 
 GATHER_CHANNEL   = "Gather"
 DEV_CHANNEL      = "development"
@@ -69,7 +73,9 @@ async def on_ready():
     # One name can only belong to one player
     await aliases_col.create_index("name_key", unique=True)
     await skips_col.create_index("name_key", unique=True)
-    await racers_col.create_index("name_key", unique=True)
+    # One race is ingested once, however many times we re-read the session
+    await races_col.create_index("game_id", unique=True)
+    await boards_col.create_index("track", unique=True)
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
@@ -848,43 +854,255 @@ async def links_cmd(ctx):
     await ctx.send(embed=embed)
 
 
-@bot.command(name="racers")
+# ── Race results ──────────────────────────────────────────────────────────────
+SESSION_ID_RE = re.compile(r"([0-9a-f]{32})")
+
+
+async def store_races(session: dict, races: list) -> tuple[int, int]:
+    """Save races we have not seen before. Returns (stored, already had)."""
+    stored = already = 0
+    for race in races:
+        if race.finished_at is None:
+            continue                      # still being played
+        doc = {
+            "game_id":    race.game_id,
+            "session_id": session.get("ID"),
+            "session":    session.get("Name"),
+            "number":     race.number,
+            "track":      race.track,
+            "track_dir":  race.track_dir,
+            "laps":       race.laps,
+            "pickups":    race.pickups,
+            "counted":    race.counted,
+            "reject":     race.reject_reason,
+            "finished_at": race.finished_at,
+            "entries": [{
+                "name_raw":    e.name_raw,
+                "name_key":    e.name_key,
+                "car":         e.car,
+                "time_ms":     e.time_ms,
+                "best_lap_ms": e.best_lap_ms,
+                "counted":     e.counted,
+                "reject":      e.reject_reason,
+            } for e in race.entries],
+            "ingested_at": datetime.now(timezone.utc),
+        }
+        result = await races_col.update_one({"game_id": race.game_id},
+                                            {"$setOnInsert": doc}, upsert=True)
+        if result.upserted_id is not None:
+            stored += 1
+        else:
+            already += 1
+    return stored, already
+
+
+async def link_map() -> dict:
+    """name_key -> discord uid, for everyone linked."""
+    out = {}
+    async for a in aliases_col.find({}, {"name_key": 1, "uid": 1}):
+        out[a["name_key"]] = a["uid"]
+    return out
+
+async def best_per_track(track: str) -> tuple[list, dict]:
+    """Each player's fastest run on a track, plus anyone not linked yet.
+
+    A repeat run only replaces a stored time if it is faster, so a board moves
+    only when someone sets a personal best.
+    """
+    best: dict[str, dict] = {}
+    async for doc in races_col.find({"track": track, "counted": True}, {"entries": 1}):
+        for entry in doc["entries"]:
+            if not entry.get("counted"):
+                continue
+            prev = best.get(entry["name_key"])
+            if prev is None:
+                best[entry["name_key"]] = {**entry, "runs": 1}
+            else:
+                prev["runs"] += 1
+                if entry["time_ms"] < prev["time_ms"]:
+                    prev.update({k: entry[k] for k in ("time_ms", "best_lap_ms", "car")})
+
+    links   = await link_map()
+    ranked  = sorted((b for k, b in best.items() if k in links), key=lambda b: b["time_ms"])
+    waiting = {k: b["name_raw"] for k, b in best.items() if k not in links}
+    return [(links[b["name_key"]], b) for b in ranked], waiting
+
+
+def board_embed(track: str, ranked: list, waiting: dict) -> discord.Embed:
+    lines = []
+    for place, (uid, b) in enumerate(ranked, 1):
+        medal = ["🥇", "🥈", "🥉"][place - 1] if place <= 3 else f"`#{place}`"
+        # Deliberately no run count: it would change the board on every race,
+        # and this should only move when a time actually improves.
+        lines.append(f"{medal} <@{uid}> — `{ms_to_time(b['time_ms'])}`"
+                     f"  ·  best lap `{ms_to_time(b['best_lap_ms'])}`")
+
+    body = "\n".join(lines) if lines else "*nobody linked yet*"
+    if waiting:
+        body += f"\n\n⏳ {len(waiting)} unlinked — see `!unlinked`"
+    embed = discord.Embed(title=f"🏁 {track}", description=body, color=0x00cfff)
+    embed.set_footer(text="updates when someone sets a personal best")
+    return embed
+
+
+async def refresh_board(channel, track: str) -> str:
+    """Create or edit this track's block. Returns what happened."""
+    ranked, waiting = await best_per_track(track)
+    if not ranked and not waiting:
+        return "empty"
+
+    embed = board_embed(track, ranked, waiting)
+    # Only touch Discord when the content actually changed
+    fingerprint = embed.description
+    board = await boards_col.find_one({"track": track})
+
+    if board and board.get("fingerprint") == fingerprint:
+        return "unchanged"
+
+    if board:
+        try:
+            message = await channel.fetch_message(board["message_id"])
+            await message.edit(embed=embed)
+            await boards_col.update_one({"track": track},
+                                        {"$set": {"fingerprint": fingerprint}})
+            return "updated"
+        except discord.NotFound:
+            pass                      # board was deleted - fall through and remake it
+
+    message = await channel.send(embed=embed)
+    await boards_col.update_one(
+        {"track": track},
+        {"$set": {"track": track, "channel_id": channel.id,
+                  "message_id": message.id, "fingerprint": fingerprint}},
+        upsert=True)
+    return "created"
+
+
+async def refresh_boards(channel, tracks) -> dict:
+    """Refresh several tracks, tallying created / updated / unchanged."""
+    counts: dict[str, int] = {}
+    for track in tracks:
+        result = await refresh_board(channel, track)
+        counts[result] = counts.get(result, 0) + 1
+    return counts
+
+
+@bot.command(name="ingest")
 @admin_or_dev()
-async def racers_cmd(ctx):
-    """Everyone seen in results, and whether they are linked yet."""
-    docs = await racers_col.find().to_list(None)
-    if not docs:
-        await ctx.send("No racers recorded yet — run `!scanracers <session id>` "
-                       "while a session is live.")
+async def ingest_cmd(ctx, session_ref: str):
+    """Pull a coordinator session's races in: !ingest <id or url>"""
+    match = SESSION_ID_RE.search(session_ref)
+    if not match:
+        await ctx.send("❌ Give a session id or its net.rv.gl URL.")
         return
 
-    linked = {}
-    async for a in aliases_col.find({}, {"name_key": 1, "uid": 1}):
-        linked[a["name_key"]] = a["uid"]
+    async with ctx.typing():
+        try:
+            session = await asyncio.to_thread(fetch_session, match.group(1))
+        except Exception as e:
+            await ctx.send(f"❌ Could not reach the coordinator: `{e.__class__.__name__}`")
+            return
+    if session is None:
+        await ctx.send("❌ That session is gone — the coordinator drops them once they close.")
+        return
+
+    races  = apply_race_rules(races_from(session))
+    stored, already = await store_races(session, races)
+    voided = [r for r in races if r.finished_at and not r.counted]
+
+    summary = f"📥 **{session.get('Name', '?')}** — {stored} new race(s)"
+    if already:
+        summary += f", {already} already stored"
+    for r in voided[:5]:
+        summary += f"\n⚠️ {r.track} — {r.reject_reason}"
+    await ctx.send(summary)
+
+    async with ctx.typing():
+        counts = await refresh_boards(ctx.channel, sorted({r.track for r in races if r.counted}))
+    if counts:
+        await ctx.send("🏁 boards: " + ", ".join(f"{n} {what}" for what, n in counts.items()))
+
+
+@bot.command(name="repost")
+@admin_or_dev()
+async def repost_cmd(ctx):
+    """Refresh every track block — use after linking people."""
+    tracks = await races_col.distinct("track", {"counted": True})
+    if not tracks:
+        await ctx.send("No results stored yet.")
+        return
+    async with ctx.typing():
+        counts = await refresh_boards(ctx.channel, sorted(tracks))
+    await ctx.send("🏁 boards: " + ", ".join(f"{n} {what}" for what, n in counts.items()))
+
+@bot.command(name="unlinked")
+@admin_or_dev()
+async def unlinked_cmd(ctx):
+    """Everyone with stored results who has no Discord user attached yet."""
+    links = await link_map()
     skipped = set()
     async for s in skips_col.find({}, {"name_key": 1}):
         skipped.add(s["name_key"])
 
-    docs.sort(key=lambda d: (-d.get("races", 0), d.get("name_raw", "").lower()))
-    done, todo = [], []
-    for d in docs:
-        key, raw, n = d["name_key"], d.get("name_raw", d["name_key"]), d.get("races", 0)
-        if key in linked:
-            done.append(f"`{raw}` → <@{linked[key]}>")
-        elif key in skipped:
-            done.append(f"`{raw}` → 🚫 skipped")
-        else:
-            todo.append(f"`{raw}` — {n} race(s)")
+    waiting: dict[str, dict] = {}
+    async for doc in races_col.find({}, {"entries": 1, "track": 1, "session": 1}):
+        for entry in doc["entries"]:
+            key = entry["name_key"]
+            if key in links or key in skipped:
+                continue
+            row = waiting.setdefault(key, {"raw": entry["name_raw"], "races": 0,
+                                           "session": doc.get("session")})
+            row["races"] += 1
 
-    embed = discord.Embed(title=f"🏎️ Racers seen in results ({len(docs)})", color=0x00cfff)
+    if not waiting:
+        await ctx.send("✅ Everyone with results is linked.")
+        return
+
+    lines = [f"`{r['raw']}` — {r['races']} race(s), last in *{r['session']}*"
+             for r in sorted(waiting.values(), key=lambda r: -r["races"])]
+    embed = discord.Embed(
+        title=f"⏳ Unlinked racers ({len(waiting)})",
+        description="\n".join(lines[:25])[:2000],
+        color=0xffcc00)
+    embed.set_footer(text="!link <ingame name> <user id>  ·  then !repost <session id>")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="racers")
+@admin_or_dev()
+async def racers_cmd(ctx):
+    """Everyone seen in results, and whether they are linked yet."""
+    links = await link_map()
+    skipped = set()
+    async for s in skips_col.find({}, {"name_key": 1}):
+        skipped.add(s["name_key"])
+
+    seen: dict[str, dict] = {}
+    async for doc in races_col.find({}, {"entries": 1}):
+        for entry in doc["entries"]:
+            row = seen.setdefault(entry["name_key"], {"raw": entry["name_raw"], "races": 0})
+            row["races"] += 1
+    if not seen:
+        await ctx.send("No results stored yet — run `!ingest <session id>` while a "
+                       "session is live.")
+        return
+
+    done, todo = [], []
+    for key, row in sorted(seen.items(), key=lambda kv: -kv[1]["races"]):
+        if key in links:
+            done.append(f"`{row['raw']}` → <@{links[key]}>")
+        elif key in skipped:
+            done.append(f"`{row['raw']}` → 🚫 skipped")
+        else:
+            todo.append(f"`{row['raw']}` — {row['races']} race(s)")
+
+    embed = discord.Embed(title=f"🏎️ Racers seen in results ({len(seen)})", color=0x00cfff)
     if todo:
         embed.add_field(name=f"❗ Not linked yet ({len(todo)})",
                         value="\n".join(todo[:25])[:1000], inline=False)
     if done:
         embed.add_field(name=f"✅ Handled ({len(done)})",
                         value="\n".join(done[:25])[:1000], inline=False)
-    if todo:
-        embed.set_footer(text="Link them with !link <ingame name> <user id>, or !linksuggest")
     await ctx.send(embed=embed)
 
 
@@ -952,8 +1170,9 @@ async def gather_suggestions(guild):
         skips[doc["name_key"]] = doc.get("name_raw", doc["name_key"])
 
     known: dict[str, str] = {}
-    async for doc in racers_col.find({}, {"name_key": 1, "name_raw": 1}):
-        known[doc["name_key"]] = doc.get("name_raw", doc["name_key"])
+    async for doc in races_col.find({}, {"entries": 1}):
+        for entry in doc["entries"]:
+            known.setdefault(entry["name_key"], entry["name_raw"])
 
     if not known:
         # Nothing scanned yet - fall back to the curated roster so this is useful
@@ -1317,6 +1536,9 @@ async def rvr_help(ctx):
     embed = discord.Embed(title="🤖 RVR Bot Commands", color=discord.Color.blurple())
     embed.add_field(name="!whois <ingame name>",  value="Show which Discord user an in-game name belongs to", inline=False)
     embed.add_field(name="── Admin only ──",      value="\u200b", inline=False)
+    embed.add_field(name="!ingest <session id/url>",     value="Pull a coordinator session's races in and post the results", inline=False)
+    embed.add_field(name="!repost <session id>",         value="Post a session's results again, after linking people", inline=False)
+    embed.add_field(name="!unlinked",                    value="Racers with held results and no Discord user yet", inline=False)
     embed.add_field(name="!link <ingame name> @user",    value="Link an in-game name to a Discord user so results score to them", inline=False)
     embed.add_field(name="!linksuggest",                 value="Show which in-game names auto-match a Discord member (no changes)", inline=False)
     embed.add_field(name="!linkconfirm",                 value="Apply the exact matches from !linksuggest", inline=False)
