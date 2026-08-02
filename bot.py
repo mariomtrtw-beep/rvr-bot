@@ -1164,8 +1164,22 @@ async def rename_cycle(ctx, *, new_name: str):
 async def list_members(ctx):
     members = [m for m in ctx.guild.members if not m.bot]
     members.sort(key=lambda m: m.display_name.lower())
-    names = "\n".join(m.display_name for m in members)
-    await ctx.author.send(f"**Server members ({len(members)}):**\n```\n{names}\n```")
+
+    width = max((len(m.display_name) for m in members), default=0)
+    lines = [f"{m.display_name:<{width}}  {m.id}" for m in members]
+
+    await ctx.author.send(f"**Server members ({len(members)})** — id on the right, "
+                          f"usable with `!link <ingame name> <id>`")
+    # Long rosters do not fit in one message
+    chunk: list[str] = []
+    for line in lines:
+        if sum(len(x) + 1 for x in chunk) + len(line) > 1800:
+            await ctx.author.send("```\n" + "\n".join(chunk) + "\n```")
+            chunk = []
+        chunk.append(line)
+    if chunk:
+        await ctx.author.send("```\n" + "\n".join(chunk) + "\n```")
+
     await ctx.message.delete()
 
 
@@ -1219,6 +1233,43 @@ def _strip_mentions(text: str) -> str:
     return re.sub(r"<@[!&]?\d+>", "", text).strip()
 
 
+_SNOWFLAKE = re.compile(r"\b(\d{17,20})\b")
+
+
+def find_member(guild, needle: str):
+    """A member whose display name or username matches, or None."""
+    key = name_key(needle)
+    if not key:
+        return None
+    for m in guild.members:
+        if not m.bot and key in (name_key(m.display_name), name_key(m.name)):
+            return m
+    return None
+
+
+def split_member_and_name(ctx, args: str):
+    """Separate the Discord user from the in-game name in a !link argument.
+
+    Accepts a mention, a raw user id, or a username as the final word, because
+    private channels do not offer @ autocomplete for members who are not in them.
+    """
+    if ctx.message.mentions:
+        return ctx.message.mentions[0], _strip_mentions(args)
+
+    snowflake = _SNOWFLAKE.search(args)
+    if snowflake:
+        member = ctx.guild.get_member(int(snowflake.group(1)))
+        rest = (args[:snowflake.start()] + args[snowflake.end():]).strip()
+        return member, rest
+
+    parts = args.split()
+    if len(parts) >= 2:
+        member = find_member(ctx.guild, parts[-1])
+        if member:
+            return member, " ".join(parts[:-1]).strip()
+    return None, args.strip()
+
+
 async def resolve_uid(ingame_name: str) -> int | None:
     """Discord id behind an in-game name, or None if nobody has claimed it."""
     doc = await aliases_col.find_one({"name_key": name_key(ingame_name)})
@@ -1232,13 +1283,16 @@ async def link_cmd(ctx, *, args: str = ""):
 
     The name may contain spaces and the two arguments work in either order.
     """
-    if not ctx.message.mentions:
-        await ctx.send("❌ Usage: `!link <ingame name> @user`\nExample: `!link SHIGEKIX @Shigekix`")
+    member, raw = split_member_and_name(ctx, args)
+    if member is None:
+        await ctx.send(
+            "❌ Could not work out which Discord user you meant. Any of these work:\n"
+            "`!link SHIGEKIX @Shigekix`  (mention)\n"
+            "`!link SHIGEKIX 123456789012345678`  (user id — use `!listmembers` to get ids)\n"
+            "`!link SHIGEKIX shigekix`  (their Discord username as the last word)")
         return
 
-    member = ctx.message.mentions[0]
-    raw    = _strip_mentions(args)
-    key    = name_key(raw)
+    key = name_key(raw)
     if not key:
         await ctx.send("❌ Give the in-game name exactly as it appears in the results, "
                        "e.g. `!link JN 2002 @someone`")
