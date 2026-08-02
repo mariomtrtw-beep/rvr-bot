@@ -1358,6 +1358,46 @@ async def links_cmd(ctx):
     await ctx.send(embed=embed)
 
 
+@bot.command(name="racers")
+@admin_or_dev()
+async def racers_cmd(ctx):
+    """Everyone seen in results, and whether they are linked yet."""
+    docs = await racers_col.find().to_list(None)
+    if not docs:
+        await ctx.send("No racers recorded yet — run `!scanracers <session id>` "
+                       "while a session is live.")
+        return
+
+    linked = {}
+    async for a in aliases_col.find({}, {"name_key": 1, "uid": 1}):
+        linked[a["name_key"]] = a["uid"]
+    skipped = set()
+    async for s in skips_col.find({}, {"name_key": 1}):
+        skipped.add(s["name_key"])
+
+    docs.sort(key=lambda d: (-d.get("races", 0), d.get("name_raw", "").lower()))
+    done, todo = [], []
+    for d in docs:
+        key, raw, n = d["name_key"], d.get("name_raw", d["name_key"]), d.get("races", 0)
+        if key in linked:
+            done.append(f"`{raw}` → <@{linked[key]}>")
+        elif key in skipped:
+            done.append(f"`{raw}` → 🚫 skipped")
+        else:
+            todo.append(f"`{raw}` — {n} race(s)")
+
+    embed = discord.Embed(title=f"🏎️ Racers seen in results ({len(docs)})", color=0x00cfff)
+    if todo:
+        embed.add_field(name=f"❗ Not linked yet ({len(todo)})",
+                        value="\n".join(todo[:25])[:1000], inline=False)
+    if done:
+        embed.add_field(name=f"✅ Handled ({len(done)})",
+                        value="\n".join(done[:25])[:1000], inline=False)
+    if todo:
+        embed.set_footer(text="Link them with !link <ingame name> <user id>, or !linksuggest")
+    await ctx.send(embed=embed)
+
+
 @bot.command(name="whois")
 async def whois_cmd(ctx, *, ingame_name: str):
     """Who does an in-game name belong to?"""
@@ -1861,6 +1901,7 @@ async def rvr_help(ctx):
     embed.add_field(name="!linkskip <ingame name>",      value="Leave a name out of link suggestions (undo with !linkunskip)", inline=False)
     embed.add_field(name="!unlink <ingame name>",        value="Remove a name link", inline=False)
     embed.add_field(name="!links",                       value="Show every linked in-game name", inline=False)
+    embed.add_field(name="!racers",                      value="Show everyone seen in results and who still needs linking", inline=False)
     embed.add_field(name="!setrating @player <1-10>",    value="Set a player's skill rating for team balancing", inline=False)
     embed.add_field(name="!maketeams",                   value="Auto-split players in Gather VC into 2 balanced teams", inline=False)
     embed.add_field(name="!ratings",                     value="Show all player ratings", inline=False)
