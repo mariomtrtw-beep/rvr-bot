@@ -1306,6 +1306,120 @@ async def whois_cmd(ctx, *, ingame_name: str):
     await ctx.send(f"🔗 **{doc.get('name_raw', raw)}** → <@{doc['uid']}>")
 
 
+# ── Link suggestions ──────────────────────────────────────────────────────────
+def match_names(known: dict, member_idx: dict, linked: set) -> tuple[list, list, list]:
+    """Split known in-game names into exact / ambiguous / unmatched.
+
+    Pure so it can be tested without Discord or Mongo. `known` maps match key to
+    the name as written, `member_idx` maps match key to the members whose
+    display name or username normalises to it.
+    """
+    exact, ambiguous, unmatched = [], [], []
+    for key, raw in sorted(known.items(), key=lambda kv: kv[1].lower()):
+        if key in linked:
+            continue
+        found = member_idx.get(key, [])
+        if len(found) == 1:
+            exact.append((raw, key, found[0]))
+        elif found:
+            ambiguous.append((raw, key, found))
+        else:
+            unmatched.append((raw, key))
+    return exact, ambiguous, unmatched
+
+
+def build_member_index(guild) -> dict:
+    """Match key -> members, from both display names and usernames."""
+    idx: dict[str, list] = {}
+    for m in guild.members:
+        if m.bot:
+            continue
+        for candidate in {m.display_name, m.name}:
+            key = name_key(candidate)
+            if key and m not in idx.setdefault(key, []):
+                idx[key].append(m)
+    return idx
+
+
+async def gather_suggestions(guild):
+    """Work out which known in-game names line up with which Discord members."""
+    linked = set()
+    async for doc in aliases_col.find({}, {"name_key": 1}):
+        linked.add(doc["name_key"])
+
+    known: dict[str, str] = {}
+    async for r in ratings_col.find({}, {"user": 1}):
+        if r.get("user"):
+            known.setdefault(name_key(r["user"]), r["user"])
+    for seeded, _rating in SEED_RATINGS:
+        known.setdefault(name_key(seeded), seeded)
+
+    return match_names(known, build_member_index(guild), linked)
+
+
+@bot.command(name="linksuggest")
+@admin_or_dev()
+async def linksuggest_cmd(ctx):
+    """Dry run: show which in-game names would be linked automatically."""
+    exact, ambiguous, unmatched = await gather_suggestions(ctx.guild)
+
+    if not (exact or ambiguous or unmatched):
+        await ctx.send("✅ Every known in-game name is already linked.")
+        return
+
+    embed = discord.Embed(
+        title="🔗 Suggested links",
+        description="Nothing has been saved yet — run `!linkconfirm` to apply the exact matches.",
+        color=0x00cfff,
+    )
+    if exact:
+        embed.add_field(
+            name=f"✅ Exact match ({len(exact)}) — these would be linked",
+            value="\n".join(f"`{raw}` → {m.mention}" for raw, _k, m in exact[:25])[:1000]
+                  + ("\n…" if len(exact) > 25 else ""),
+            inline=False)
+    if ambiguous:
+        embed.add_field(
+            name=f"⚠️ Several members match ({len(ambiguous)}) — link these by hand",
+            value="\n".join(f"`{raw}` → " + ", ".join(m.mention for m in ms)
+                            for raw, _k, ms in ambiguous[:10])[:1000],
+            inline=False)
+    if unmatched:
+        embed.add_field(
+            name=f"❓ No Discord member matches ({len(unmatched)})",
+            value=", ".join(f"`{raw}`" for raw, _k in unmatched[:30])[:1000],
+            inline=False)
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="linkconfirm")
+@admin_or_dev()
+async def linkconfirm_cmd(ctx):
+    """Apply the exact matches from !linksuggest. Ambiguous ones are left alone."""
+    exact, _ambiguous, _unmatched = await gather_suggestions(ctx.guild)
+    if not exact:
+        await ctx.send("Nothing to link — run `!linksuggest` to see why.")
+        return
+
+    now = datetime.now(timezone.utc)
+    for raw, key, member in exact:
+        await aliases_col.update_one(
+            {"name_key": key},
+            {"$set": {
+                "name_key":  key,
+                "name_raw":  raw,
+                "uid":       member.id,
+                "user":      member.display_name,
+                "linked_by": ctx.author.id,
+                "linked_at": now,
+                "auto":      True,
+            }},
+            upsert=True,
+        )
+    await ctx.send(f"✅ Linked {len(exact)} name(s). Check with `!links`, fix any with "
+                   f"`!unlink <name>`.")
+
+
 @bot.command(name="maketeams")
 @admin_or_dev()
 async def make_teams(ctx):
@@ -1502,6 +1616,8 @@ async def rvr_help(ctx):
     embed.add_field(name="!removetrack <track>",         value="Remove a track and all its times (current cycle)", inline=False)
     embed.add_field(name="!removetime @player <track>",  value="Remove a player's time from a track (current cycle)", inline=False)
     embed.add_field(name="!link <ingame name> @user",    value="Link an in-game name to a Discord user so results score to them", inline=False)
+    embed.add_field(name="!linksuggest",                 value="Show which in-game names auto-match a Discord member (no changes)", inline=False)
+    embed.add_field(name="!linkconfirm",                 value="Apply the exact matches from !linksuggest", inline=False)
     embed.add_field(name="!unlink <ingame name>",        value="Remove a name link", inline=False)
     embed.add_field(name="!links",                       value="Show every linked in-game name", inline=False)
     embed.add_field(name="!setrating @player <1-10>",    value="Set a player's skill rating for team balancing", inline=False)
