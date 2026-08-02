@@ -9,9 +9,10 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 # Shared with the result ingest so a name normalises identically on both sides.
-from rvgl_results import name_key
-from coordinator_ingest import (apply_rules as apply_race_rules, fetch_session,
-                                ms_to_time, races_from)
+from rvgl_results import name_key, REQUIRED_LAPS
+from coordinator_ingest import (ALLOW_PICKUPS, apply_rules as apply_race_rules,
+                                fetch_session, ms_to_time, races_from)
+from coordinator_probe import read_frames, sessions_from
 
 # ── Config ────────────────────────────────────────────────────────────────────
 TOKEN     = os.environ["DISCORD_TOKEN"]
@@ -28,6 +29,7 @@ aliases_col  = db["aliases"]      # in-game name -> discord user
 skips_col    = db["link_skips"]   # names deliberately left unlinked
 races_col    = db["races"]        # every race ingested, one doc per GameID
 boards_col   = db["track_boards"] # the posted message we edit per track
+state_col    = db["bot_state"]    # small key/value bits, e.g. the armed session
 
 GATHER_CHANNEL   = "Gather"
 DEV_CHANNEL      = "development"
@@ -987,18 +989,120 @@ async def refresh_boards(channel, tracks) -> dict:
     return counts
 
 
+def live_sessions() -> list:
+    """Current sessions from the coordinator's event stream (first frame)."""
+    for frame in read_frames():
+        return sessions_from(frame)
+    return []
+
+
+def check_settings(session: dict) -> list[str]:
+    """Complaints about a lobby's setup, before anyone wastes a race on it."""
+    game = session.get("GameData") or {}
+    problems = []
+    if game.get("NumLaps") != REQUIRED_LAPS:
+        problems.append(f"laps are {game.get('NumLaps')}, should be {REQUIRED_LAPS}")
+    if bool(game.get("Pickups")) and not ALLOW_PICKUPS:
+        problems.append("pickups are ON, should be off")
+    if (session.get("CarRating") or "").lower() != "pro":
+        problems.append(f"car class is {session.get('CarRating')!r}, should be 'pro'")
+    if not session.get("Public"):
+        problems.append("session is private, so results cannot be read")
+    return problems
+
+
+async def set_active_session(session: dict, uid: int) -> None:
+    await state_col.update_one(
+        {"key": "active_session"},
+        {"$set": {"key": "active_session", "session_id": session.get("ID"),
+                  "name": session.get("Name"), "armed_by": uid,
+                  "armed_at": datetime.now(timezone.utc)}},
+        upsert=True)
+
+
+async def active_session_id() -> str | None:
+    doc = await state_col.find_one({"key": "active_session"})
+    return doc.get("session_id") if doc else None
+
+
+@bot.command(name="b3l")
+@admin_or_dev()
+async def b3l_cmd(ctx):
+    """Find the live coordinator session and arm it for ingesting."""
+    async with ctx.typing():
+        try:
+            sessions = await asyncio.to_thread(live_sessions)
+        except Exception as e:
+            await ctx.send(f"❌ Could not reach the coordinator: `{e.__class__.__name__}`")
+            return
+
+    usable = [s for s in sessions if s.get("id")]
+    if not usable:
+        hidden = len(sessions) - len(usable)
+        note = (f" ({hidden} private one(s) are up, but private sessions expose no id)"
+                if hidden else "")
+        await ctx.send(f"❌ No public session is live right now{note}.")
+        return
+
+    if len(usable) > 1:
+        listing = "\n".join(f"`{s['id']}` — **{s.get('name','?')}** "
+                            f"({s.get('player_count', '?')} players)" for s in usable[:10])
+        await ctx.send(f"⚠️ {len(usable)} public sessions are live — "
+                       f"run `!ingest <id>` with the right one:\n{listing}")
+        return
+
+    listed = usable[0]
+    async with ctx.typing():
+        try:
+            session = await asyncio.to_thread(fetch_session, listed["id"])
+        except Exception as e:
+            await ctx.send(f"❌ Could not read that session: `{e.__class__.__name__}`")
+            return
+    if session is None:
+        await ctx.send("❌ That session vanished between listing and reading it.")
+        return
+
+    await set_active_session(session, ctx.author.id)
+    problems = check_settings(session)
+
+    embed = discord.Embed(
+        title=f"🏁 {session.get('Name', '?')}",
+        description=f"```{session.get('ID')}```",
+        color=0xff5555 if problems else 0x00cfff)
+    embed.add_field(name="Join",
+                    value=f"`{listed.get('host', '?')}:{session.get('Port', '?')}`", inline=True)
+    embed.add_field(name="Laps", value=str((session.get("GameData") or {}).get("NumLaps")),
+                    inline=True)
+    embed.add_field(name="Cars", value=str(session.get("CarRating")), inline=True)
+    if problems:
+        embed.add_field(name="⚠️ Fix before racing",
+                        value="\n".join(f"• {p}" for p in problems), inline=False)
+    else:
+        embed.add_field(name="✅ Settings look right",
+                        value="3 laps, no pickups, pro cars, public", inline=False)
+    embed.set_footer(text="run !ingest before closing the lobby — results vanish with it")
+    await ctx.send(embed=embed)
+
+
 @bot.command(name="ingest")
 @admin_or_dev()
-async def ingest_cmd(ctx, session_ref: str):
-    """Pull a coordinator session's races in: !ingest <id or url>"""
-    match = SESSION_ID_RE.search(session_ref)
-    if not match:
-        await ctx.send("❌ Give a session id or its net.rv.gl URL.")
-        return
+async def ingest_cmd(ctx, session_ref: str = ""):
+    """Pull a coordinator session's races in: !ingest [id or url]"""
+    if session_ref:
+        match = SESSION_ID_RE.search(session_ref)
+        if not match:
+            await ctx.send("❌ Give a session id or its net.rv.gl URL.")
+            return
+        session_id = match.group(1)
+    else:
+        session_id = await active_session_id()
+        if not session_id:
+            await ctx.send("❌ No session armed — run `!b3l` first, or `!ingest <id>`.")
+            return
 
     async with ctx.typing():
         try:
-            session = await asyncio.to_thread(fetch_session, match.group(1))
+            session = await asyncio.to_thread(fetch_session, session_id)
         except Exception as e:
             await ctx.send(f"❌ Could not reach the coordinator: `{e.__class__.__name__}`")
             return
@@ -1536,7 +1640,8 @@ async def rvr_help(ctx):
     embed = discord.Embed(title="🤖 RVR Bot Commands", color=discord.Color.blurple())
     embed.add_field(name="!whois <ingame name>",  value="Show which Discord user an in-game name belongs to", inline=False)
     embed.add_field(name="── Admin only ──",      value="\u200b", inline=False)
-    embed.add_field(name="!ingest <session id/url>",     value="Pull a coordinator session's races in and post the results", inline=False)
+    embed.add_field(name="!b3l",                         value="Find the live session, check its settings, and arm it for ingesting", inline=False)
+    embed.add_field(name="!ingest [session id]",     value="Pull the armed session's races in and update the boards", inline=False)
     embed.add_field(name="!repost <session id>",         value="Post a session's results again, after linking people", inline=False)
     embed.add_field(name="!unlinked",                    value="Racers with held results and no Discord user yet", inline=False)
     embed.add_field(name="!link <ingame name> @user",    value="Link an in-game name to a Discord user so results score to them", inline=False)
