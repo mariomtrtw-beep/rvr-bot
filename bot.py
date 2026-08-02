@@ -1466,6 +1466,53 @@ async def linksuggest_cmd(ctx):
     await ctx.send(embed=embed)
 
 
+@bot.command(name="linkdebug")
+@admin_or_dev()
+async def linkdebug_cmd(ctx, *, ingame_name: str):
+    """Explain why a name is or is not showing up in !linksuggest."""
+    raw = _strip_mentions(ingame_name)
+    key = name_key(raw)
+
+    alias = await aliases_col.find_one({"name_key": key})
+    skip  = await skips_col.find_one({"name_key": key})
+
+    known: dict[str, str] = {}
+    async for r in ratings_col.find({}, {"user": 1}):
+        if r.get("user"):
+            known.setdefault(name_key(r["user"]), r["user"])
+    seeded = {name_key(n): n for n, _ in SEED_RATINGS}
+
+    members = build_member_index(ctx.guild).get(key, [])
+
+    lines = [
+        f"**Typed:** `{raw}`",
+        f"**Match key:** `{key or '(empty)'}`",
+        "",
+        f"**Linked?** " + (f"yes → <@{alias['uid']}> (stored as `{alias.get('name_raw', '?')}`)"
+                           if alias else "no"),
+        f"**Skipped?** " + ("yes" if skip else "no"),
+        f"**In ratings table?** " + (f"yes, as `{known[key]}`" if key in known else "no"),
+        f"**In SEED_RATINGS?** " + (f"yes, as `{seeded[key]}`" if key in seeded else "no"),
+        f"**Discord members matching this key:** "
+        + (", ".join(m.mention for m in members) if members else "none"),
+    ]
+
+    if alias:
+        verdict = "Already linked, so it should NOT appear in `!linksuggest`."
+    elif skip:
+        verdict = "Skipped, so it appears only under 🚫."
+    elif key not in known and key not in seeded:
+        verdict = ("This exact spelling is not in the suggestion source at all. "
+                   "`!linksuggest` only offers names from the ratings table and "
+                   "SEED_RATINGS — a differently spelled name there is a separate entry.")
+    else:
+        verdict = "Not linked yet, so it will appear in `!linksuggest`."
+
+    embed = discord.Embed(title="🔍 Link debug", description="\n".join(lines), color=0x00cfff)
+    embed.add_field(name="Verdict", value=verdict, inline=False)
+    await ctx.send(embed=embed)
+
+
 @bot.command(name="linkskip")
 @admin_or_dev()
 async def linkskip_cmd(ctx, *, ingame_name: str):
