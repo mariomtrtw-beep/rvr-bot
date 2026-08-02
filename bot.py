@@ -1297,6 +1297,10 @@ async def link_cmd(ctx, *, args: str = ""):
         await ctx.send("❌ Give the in-game name exactly as it appears in the results, "
                        "e.g. `!link JN 2002 @someone`")
         return
+    if raw.isdigit():
+        await ctx.send(f"❌ `{raw}` looks like a user id, not an in-game name. "
+                       f"Put the name first: `!link <ingame name> {raw}`")
+        return
 
     existing = await aliases_col.find_one({"name_key": key})
     if existing and existing["uid"] != member.id:
@@ -1468,9 +1472,22 @@ async def linksuggest_cmd(ctx):
 
 @bot.command(name="linkdebug")
 @admin_or_dev()
-async def linkdebug_cmd(ctx, *, ingame_name: str):
-    """Explain why a name is or is not showing up in !linksuggest."""
-    raw = _strip_mentions(ingame_name)
+async def linkdebug_cmd(ctx, *, query: str):
+    """Explain a name's suggestion state, or list the names a user owns."""
+    # Given a user rather than a name, answer the reverse question instead.
+    member, leftover = split_member_and_name(ctx, query)
+    if member and not leftover:
+        owned = await aliases_col.find({"uid": member.id}).to_list(None)
+        names = ", ".join(f"`{d.get('name_raw', d['name_key'])}`" for d in owned) or "*none*"
+        embed = discord.Embed(
+            title=f"🔍 Names linked to {member.display_name}",
+            description=f"{member.mention} — {names}\n\n"
+                        f"Add another with `!link <ingame name> {member.id}`.",
+            color=0x00cfff)
+        await ctx.send(embed=embed)
+        return
+
+    raw = _strip_mentions(query)
     key = name_key(raw)
 
     alias = await aliases_col.find_one({"name_key": key})
