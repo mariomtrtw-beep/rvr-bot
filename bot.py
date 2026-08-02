@@ -32,7 +32,8 @@ times_col    = db["times"]
 cycles_col   = db["cycles"]
 medals_col   = db["medals"]
 ratings_col  = db["ratings"]
-aliases_col  = db["aliases"]   # in-game name -> discord user
+aliases_col  = db["aliases"]      # in-game name -> discord user
+skips_col    = db["link_skips"]   # names deliberately left unlinked
 
 GATHER_CHANNEL   = "Gather"
 DEV_CHANNEL      = "development"
@@ -125,6 +126,7 @@ async def on_ready():
     await get_current_cycle()
     # One name can only belong to one player
     await aliases_col.create_index("name_key", unique=True)
+    await skips_col.create_index("name_key", unique=True)
 
 @bot.event
 async def on_message(message):
@@ -1342,10 +1344,18 @@ def build_member_index(guild) -> dict:
 
 
 async def gather_suggestions(guild):
-    """Work out which known in-game names line up with which Discord members."""
+    """Which known in-game names line up with which Discord members.
+
+    Returns (exact, ambiguous, unmatched, skipped). Names already linked, or
+    explicitly skipped with !linkskip, are left out of the matching entirely.
+    """
     linked = set()
     async for doc in aliases_col.find({}, {"name_key": 1}):
         linked.add(doc["name_key"])
+
+    skips: dict[str, str] = {}
+    async for doc in skips_col.find({}, {"name_key": 1, "name_raw": 1}):
+        skips[doc["name_key"]] = doc.get("name_raw", doc["name_key"])
 
     known: dict[str, str] = {}
     async for r in ratings_col.find({}, {"user": 1}):
@@ -1354,22 +1364,27 @@ async def gather_suggestions(guild):
     for seeded, _rating in SEED_RATINGS:
         known.setdefault(name_key(seeded), seeded)
 
-    return match_names(known, build_member_index(guild), linked)
+    known = {k: v for k, v in known.items() if k not in skips}
+    exact, ambiguous, unmatched = match_names(known, build_member_index(guild), linked)
+    return exact, ambiguous, unmatched, sorted(skips.values(), key=str.lower)
 
 
 @bot.command(name="linksuggest")
 @admin_or_dev()
 async def linksuggest_cmd(ctx):
     """Dry run: show which in-game names would be linked automatically."""
-    exact, ambiguous, unmatched = await gather_suggestions(ctx.guild)
+    exact, ambiguous, unmatched, skipped = await gather_suggestions(ctx.guild)
 
-    if not (exact or ambiguous or unmatched):
+    if not (exact or ambiguous or unmatched or skipped):
         await ctx.send("✅ Every known in-game name is already linked.")
         return
 
     embed = discord.Embed(
         title="🔗 Suggested links",
-        description="Nothing has been saved yet — run `!linkconfirm` to apply the exact matches.",
+        description="Nothing has been saved yet.\n"
+                    "• Wrong person? `!link <name> @correct-user` — it then drops off this list\n"
+                    "• Should not be linked at all? `!linkskip <name>`\n"
+                    "• Happy with the rest? `!linkconfirm`",
         color=0x00cfff,
     )
     if exact:
@@ -1389,14 +1404,48 @@ async def linksuggest_cmd(ctx):
             name=f"❓ No Discord member matches ({len(unmatched)})",
             value=", ".join(f"`{raw}`" for raw, _k in unmatched[:30])[:1000],
             inline=False)
+    if skipped:
+        embed.add_field(
+            name=f"🚫 Skipped ({len(skipped)}) — restore with !linkunskip",
+            value=", ".join(f"`{raw}`" for raw in skipped[:30])[:1000],
+            inline=False)
     await ctx.send(embed=embed)
+
+
+@bot.command(name="linkskip")
+@admin_or_dev()
+async def linkskip_cmd(ctx, *, ingame_name: str):
+    """Leave a name out of !linksuggest and !linkconfirm."""
+    raw = _strip_mentions(ingame_name)
+    key = name_key(raw)
+    if not key:
+        await ctx.send("❌ Give the in-game name, e.g. `!linkskip AR|SANTI™`")
+        return
+    await skips_col.update_one(
+        {"name_key": key},
+        {"$set": {"name_key": key, "name_raw": raw,
+                  "skipped_by": ctx.author.id, "skipped_at": datetime.now(timezone.utc)}},
+        upsert=True,
+    )
+    await ctx.send(f"🚫 **{raw}** will be left out of link suggestions.")
+
+
+@bot.command(name="linkunskip")
+@admin_or_dev()
+async def linkunskip_cmd(ctx, *, ingame_name: str):
+    raw = _strip_mentions(ingame_name)
+    doc = await skips_col.find_one_and_delete({"name_key": name_key(raw)})
+    if not doc:
+        await ctx.send(f"❌ **{raw}** was not skipped.")
+        return
+    await ctx.send(f"↩️ **{doc.get('name_raw', raw)}** is back in link suggestions.")
 
 
 @bot.command(name="linkconfirm")
 @admin_or_dev()
 async def linkconfirm_cmd(ctx):
     """Apply the exact matches from !linksuggest. Ambiguous ones are left alone."""
-    exact, _ambiguous, _unmatched = await gather_suggestions(ctx.guild)
+    exact, _ambiguous, _unmatched, _skipped = await gather_suggestions(ctx.guild)
     if not exact:
         await ctx.send("Nothing to link — run `!linksuggest` to see why.")
         return
@@ -1618,6 +1667,7 @@ async def rvr_help(ctx):
     embed.add_field(name="!link <ingame name> @user",    value="Link an in-game name to a Discord user so results score to them", inline=False)
     embed.add_field(name="!linksuggest",                 value="Show which in-game names auto-match a Discord member (no changes)", inline=False)
     embed.add_field(name="!linkconfirm",                 value="Apply the exact matches from !linksuggest", inline=False)
+    embed.add_field(name="!linkskip <ingame name>",      value="Leave a name out of link suggestions (undo with !linkunskip)", inline=False)
     embed.add_field(name="!unlink <ingame name>",        value="Remove a name link", inline=False)
     embed.add_field(name="!links",                       value="Show every linked in-game name", inline=False)
     embed.add_field(name="!setrating @player <1-10>",    value="Set a player's skill rating for team balancing", inline=False)
