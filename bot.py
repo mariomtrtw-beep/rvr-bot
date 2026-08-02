@@ -3,10 +3,12 @@ from discord.ext import commands
 import os
 import re
 import io
-import unicodedata
 from datetime import datetime, timezone
 from motor.motor_asyncio import AsyncIOMotorClient
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
+
+# Shared with the result ingest so a name normalises identically on both sides.
+from rvgl_results import name_key
 
 # ── Config ────────────────────────────────────────────────────────────────────
 TOKEN     = os.environ["DISCORD_TOKEN"]
@@ -37,16 +39,6 @@ SEED_RATINGS = [
     ("xpete", 1.25), ("yun", 1.15), ("Zigc", 1.15), ("ZipperZbieracz", 1.30),
     ("Zsolti", 1.10), ("— 𝐋𝐨𝐥𝐛𝐢𝐭.", 1.20), ("𝙆𝙤𝙩𝙞𝙠_𝙓𝙋", 1.15),
 ]
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-def name_key(name: str) -> str:
-    """Normalise an in-game name so it can be matched to a Discord user.
-
-    NFKC folds stylised unicode (𝙆𝙤𝙩𝙞𝙠_𝙓𝙋 -> Kotik_XP) and stripping
-    non-alphanumerics handles case and punctuation (DOLO -> D.olo).
-    """
-    return re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKC", name).lower())
-
 
 # ── Bot setup ─────────────────────────────────────────────────────────────────
 intents = discord.Intents.default()
