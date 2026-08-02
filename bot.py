@@ -10,6 +10,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 # Shared with the result ingest so a name normalises identically on both sides.
 from rvgl_results import name_key
+from coordinator_ingest import fetch_session
 
 # ── Config ────────────────────────────────────────────────────────────────────
 TOKEN     = os.environ["DISCORD_TOKEN"]
@@ -34,6 +35,7 @@ medals_col   = db["medals"]
 ratings_col  = db["ratings"]
 aliases_col  = db["aliases"]      # in-game name -> discord user
 skips_col    = db["link_skips"]   # names deliberately left unlinked
+racers_col   = db["racers"]       # in-game names seen in real results
 
 GATHER_CHANNEL   = "Gather"
 DEV_CHANNEL      = "development"
@@ -127,6 +129,7 @@ async def on_ready():
     # One name can only belong to one player
     await aliases_col.create_index("name_key", unique=True)
     await skips_col.create_index("name_key", unique=True)
+    await racers_col.create_index("name_key", unique=True)
 
 @bot.event
 async def on_message(message):
@@ -1401,8 +1404,71 @@ def build_member_index(guild) -> dict:
     return idx
 
 
+SESSION_ID_RE = re.compile(r"([0-9a-f]{32})")
+
+
+async def record_session_racers(session: dict) -> tuple[int, list[str]]:
+    """Remember every in-game name in a session's History.
+
+    Every name is recorded, including ones whose race did not count, because the
+    point is knowing who to link - not who scored.
+    """
+    now, seen, new = datetime.now(timezone.utc), 0, []
+    for race in session.get("History") or []:
+        track = race.get("TrackName")
+        for entry in race.get("Entries") or []:
+            raw = (entry.get("Name") or "").strip()
+            key = name_key(raw)
+            if not key:
+                continue
+            seen += 1
+            result = await racers_col.update_one(
+                {"name_key": key},
+                {"$set":         {"name_raw": raw, "last_seen": now, "last_track": track},
+                 "$setOnInsert": {"name_key": key, "first_seen": now},
+                 "$inc":         {"races": 1}},
+                upsert=True,
+            )
+            if result.upserted_id is not None:
+                new.append(raw)
+    return seen, new
+
+
+@bot.command(name="scanracers")
+@admin_or_dev()
+async def scan_racers_cmd(ctx, session_ref: str):
+    """Record the names racing in a coordinator session: !scanracers <id or url>"""
+    match = SESSION_ID_RE.search(session_ref)
+    if not match:
+        await ctx.send("❌ Give a session id or its net.rv.gl URL.")
+        return
+
+    async with ctx.typing():
+        try:
+            # fetch_session is blocking, so keep it off the event loop
+            session = await asyncio.to_thread(fetch_session, match.group(1))
+        except Exception as e:
+            await ctx.send(f"❌ Could not reach the coordinator: `{e.__class__.__name__}`")
+            return
+
+    if session is None:
+        await ctx.send("❌ That session is gone — the coordinator drops them once they close.")
+        return
+
+    seen, new = await record_session_racers(session)
+    total = await racers_col.count_documents({})
+    msg = (f"✅ **{session.get('Name', '?')}** — {len(session.get('History') or [])} race(s), "
+           f"{seen} result row(s).\n📇 {total} racer name(s) known in total.")
+    if new:
+        msg += "\n🆕 First time seen: " + ", ".join(f"`{n}`" for n in new[:20])
+    await ctx.send(msg + "\n\nRun `!linksuggest` to link them.")
+
+
 async def gather_suggestions(guild):
     """Which known in-game names line up with which Discord members.
+
+    Names come from racers seen in real results. Until any session has been
+    scanned that list is empty, so the curated roster stands in for it.
 
     Returns (exact, ambiguous, unmatched, skipped). Names already linked, or
     explicitly skipped with !linkskip, are left out of the matching entirely.
@@ -1416,11 +1482,17 @@ async def gather_suggestions(guild):
         skips[doc["name_key"]] = doc.get("name_raw", doc["name_key"])
 
     known: dict[str, str] = {}
-    async for r in ratings_col.find({}, {"user": 1}):
-        if r.get("user"):
-            known.setdefault(name_key(r["user"]), r["user"])
-    for seeded, _rating in SEED_RATINGS:
-        known.setdefault(name_key(seeded), seeded)
+    async for doc in racers_col.find({}, {"name_key": 1, "name_raw": 1}):
+        known[doc["name_key"]] = doc.get("name_raw", doc["name_key"])
+
+    if not known:
+        # Nothing scanned yet - fall back to the curated roster so this is useful
+        # before the first session.
+        async for r in ratings_col.find({}, {"user": 1}):
+            if r.get("user"):
+                known.setdefault(name_key(r["user"]), r["user"])
+        for seeded, _rating in SEED_RATINGS:
+            known.setdefault(name_key(seeded), seeded)
 
     known = {k: v for k, v in known.items() if k not in skips}
     exact, ambiguous, unmatched = match_names(known, build_member_index(guild), linked)
@@ -1783,6 +1855,7 @@ async def rvr_help(ctx):
     embed.add_field(name="!removetrack <track>",         value="Remove a track and all its times (current cycle)", inline=False)
     embed.add_field(name="!removetime @player <track>",  value="Remove a player's time from a track (current cycle)", inline=False)
     embed.add_field(name="!link <ingame name> @user",    value="Link an in-game name to a Discord user so results score to them", inline=False)
+    embed.add_field(name="!scanracers <session id/url>", value="Record who raced in a coordinator session so they can be linked", inline=False)
     embed.add_field(name="!linksuggest",                 value="Show which in-game names auto-match a Discord member (no changes)", inline=False)
     embed.add_field(name="!linkconfirm",                 value="Apply the exact matches from !linksuggest", inline=False)
     embed.add_field(name="!linkskip <ingame name>",      value="Leave a name out of link suggestions (undo with !linkunskip)", inline=False)
