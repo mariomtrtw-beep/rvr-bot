@@ -1,7 +1,0 @@
-track_dir,game_type_slug,play_mode_slug,num_cars,laps,pickups,mirrored,reversed,random_cars,snail_mode,car_name,auto_mode,random_track
-nhood1,single_race,arcade,16,3,true,false,false,false,false,,,false
-market2,single_race,arcade,16,3,true,false,false,false,false,,,false
-garden1,single_race,arcade,16,3,false,false,false,false,false,,,false
-garden1,single_race,arcade,16,3,false,false,false,false,false,,,false
-garden1,single_race,arcade,16,3,false,false,false,false,false,,,false
-garden1,single_race,arcade,16,3,false,false,false,false,false,,,false
