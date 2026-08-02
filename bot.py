@@ -8,6 +8,9 @@ from datetime import datetime, timezone
 from motor.motor_asyncio import AsyncIOMotorClient
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
+# Shared with the result ingest so a name normalises identically on both sides.
+from rvgl_results import name_key
+
 # ── Config ────────────────────────────────────────────────────────────────────
 TOKEN     = os.environ["DISCORD_TOKEN"]
 MONGO_URL = os.environ["MONGO_URL"]
@@ -29,6 +32,7 @@ times_col    = db["times"]
 cycles_col   = db["cycles"]
 medals_col   = db["medals"]
 ratings_col  = db["ratings"]
+aliases_col  = db["aliases"]   # in-game name -> discord user
 
 GATHER_CHANNEL   = "Gather"
 DEV_CHANNEL      = "development"
@@ -119,6 +123,8 @@ async def on_ready():
     print(f"✅ Logged in as {bot.user}")
     # Ensure a cycle exists on startup
     await get_current_cycle()
+    # One name can only belong to one player
+    await aliases_col.create_index("name_key", unique=True)
 
 @bot.event
 async def on_message(message):
@@ -1206,6 +1212,100 @@ async def show_ratings(ctx):
     await ctx.message.delete()
 
 
+# ── Name linking ──────────────────────────────────────────────────────────────
+def _strip_mentions(text: str) -> str:
+    return re.sub(r"<@[!&]?\d+>", "", text).strip()
+
+
+async def resolve_uid(ingame_name: str) -> int | None:
+    """Discord id behind an in-game name, or None if nobody has claimed it."""
+    doc = await aliases_col.find_one({"name_key": name_key(ingame_name)})
+    return doc["uid"] if doc else None
+
+
+@bot.command(name="link")
+@admin_or_dev()
+async def link_cmd(ctx, *, args: str = ""):
+    """Link an in-game name to a Discord user: !link SHIGEKIX @Shigekix
+
+    The name may contain spaces and the two arguments work in either order.
+    """
+    if not ctx.message.mentions:
+        await ctx.send("❌ Usage: `!link <ingame name> @user`\nExample: `!link SHIGEKIX @Shigekix`")
+        return
+
+    member = ctx.message.mentions[0]
+    raw    = _strip_mentions(args)
+    key    = name_key(raw)
+    if not key:
+        await ctx.send("❌ Give the in-game name exactly as it appears in the results, "
+                       "e.g. `!link JN 2002 @someone`")
+        return
+
+    existing = await aliases_col.find_one({"name_key": key})
+    if existing and existing["uid"] != member.id:
+        await ctx.send(f"⚠️ **{raw}** is already linked to <@{existing['uid']}>. "
+                       f"Run `!unlink {raw}` first if that is wrong.")
+        return
+
+    await aliases_col.update_one(
+        {"name_key": key},
+        {"$set": {
+            "name_key":  key,
+            "name_raw":  raw,
+            "uid":       member.id,
+            "user":      member.display_name,
+            "linked_by": ctx.author.id,
+            "linked_at": datetime.now(timezone.utc),
+        }},
+        upsert=True,
+    )
+    await ctx.send(f"✅ Linked **{raw}** → {member.mention}")
+
+
+@bot.command(name="unlink")
+@admin_or_dev()
+async def unlink_cmd(ctx, *, ingame_name: str):
+    doc = await aliases_col.find_one_and_delete({"name_key": name_key(_strip_mentions(ingame_name))})
+    if not doc:
+        await ctx.send(f"❌ No link found for **{ingame_name}**.")
+        return
+    await ctx.send(f"🗑️ Unlinked **{doc.get('name_raw', ingame_name)}** (was <@{doc['uid']}>).")
+
+
+@bot.command(name="links")
+@admin_or_dev()
+async def links_cmd(ctx):
+    docs = await aliases_col.find().to_list(None)
+    if not docs:
+        await ctx.send("No names linked yet — use `!link <ingame name> @user`.")
+        return
+
+    by_uid: dict[int, list[str]] = {}
+    for d in docs:
+        by_uid.setdefault(d["uid"], []).append(d.get("name_raw", d["name_key"]))
+
+    lines = "\n".join(f"<@{uid}> — " + ", ".join(f"`{n}`" for n in sorted(names))
+                      for uid, names in by_uid.items())
+    embed = discord.Embed(
+        title=f"🔗 Linked names ({len(docs)} across {len(by_uid)} players)",
+        description=lines[:4000],
+        color=0x00cfff,
+    )
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="whois")
+async def whois_cmd(ctx, *, ingame_name: str):
+    """Who does an in-game name belong to?"""
+    raw = _strip_mentions(ingame_name)
+    doc = await aliases_col.find_one({"name_key": name_key(raw)})
+    if not doc:
+        await ctx.send(f"❓ **{raw}** is not linked to anyone yet.")
+        return
+    await ctx.send(f"🔗 **{doc.get('name_raw', raw)}** → <@{doc['uid']}>")
+
+
 @bot.command(name="maketeams")
 @admin_or_dev()
 async def make_teams(ctx):
@@ -1395,11 +1495,15 @@ async def rvr_help(ctx):
     embed.add_field(name="!leaderboard (or !lb)", value="Show the full leaderboard for the current month", inline=False)
     embed.add_field(name="!mystats",              value="Show your personal stats for the current month", inline=False)
     embed.add_field(name="!tracks",               value="List all tracks with times this month", inline=False)
+    embed.add_field(name="!whois <ingame name>",  value="Show which Discord user an in-game name belongs to", inline=False)
     embed.add_field(name="── Admin only ──",      value="\u200b", inline=False)
     embed.add_field(name="!previewmonth",                value="Preview what this month's results will look like (no changes made)", inline=False)
     embed.add_field(name="!closemonth",                  value="Close the current monthly cycle, post results to #monthly-results, and start a new cycle", inline=False)
     embed.add_field(name="!removetrack <track>",         value="Remove a track and all its times (current cycle)", inline=False)
     embed.add_field(name="!removetime @player <track>",  value="Remove a player's time from a track (current cycle)", inline=False)
+    embed.add_field(name="!link <ingame name> @user",    value="Link an in-game name to a Discord user so results score to them", inline=False)
+    embed.add_field(name="!unlink <ingame name>",        value="Remove a name link", inline=False)
+    embed.add_field(name="!links",                       value="Show every linked in-game name", inline=False)
     embed.add_field(name="!setrating @player <1-10>",    value="Set a player's skill rating for team balancing", inline=False)
     embed.add_field(name="!maketeams",                   value="Auto-split players in Gather VC into 2 balanced teams", inline=False)
     embed.add_field(name="!ratings",                     value="Show all player ratings", inline=False)
