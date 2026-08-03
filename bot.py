@@ -947,46 +947,72 @@ def board_embed(track: str, ranked: list, waiting: dict) -> discord.Embed:
     return embed
 
 
+async def why_nothing(track: str) -> str:
+    """Plain reason a track produced no usable times, for the report."""
+    reasons: dict[str, int] = {}
+    async for doc in races_col.find({"track": track}, {"counted": 1, "reject": 1, "entries": 1}):
+        if not doc.get("counted"):
+            reasons[doc.get("reject") or "race not counted"] = \
+                reasons.get(doc.get("reject") or "race not counted", 0) + 1
+        else:
+            for e in doc["entries"]:
+                if not e.get("counted"):
+                    r = e.get("reject") or "result not counted"
+                    reasons[r] = reasons.get(r, 0) + 1
+    if not reasons:
+        return "no results"
+    top = max(reasons, key=reasons.get)
+    return top
+
+
 async def refresh_board(channel, track: str) -> str:
-    """Create or edit this track's block. Returns what happened."""
+    """Create or edit this track's block. Returns a plain sentence about it."""
     ranked, waiting = await best_per_track(track)
+
     if not ranked and not waiting:
-        return "empty"
+        return f"⚠️ **{track}** — nothing counted ({await why_nothing(track)})"
 
-    embed = board_embed(track, ranked, waiting)
-    # Only touch Discord when the content actually changed
+    embed       = board_embed(track, ranked, waiting)
     fingerprint = embed.description
-    board = await boards_col.find_one({"track": track})
+    board       = await boards_col.find_one({"track": track})
+    old_bests   = (board or {}).get("bests", {})
+    new_bests   = {b["name_key"]: b["time_ms"] for _uid, b in ranked}
 
+    held = f"  ·  {len(waiting)} waiting on a link" if waiting else ""
+
+    # Nothing changed - do not touch Discord at all
     if board and board.get("fingerprint") == fingerprint:
-        return "unchanged"
+        return f"➖ **{track}** — no change, nobody improved{held}"
+
+    # Who actually got quicker, so the report can name them
+    improved = [f"<@{uid}> `{ms_to_time(b['time_ms'])}`" for uid, b in ranked
+                if b["name_key"] not in old_bests
+                or b["time_ms"] < old_bests[b["name_key"]]]
+
+    async def save(extra: dict):
+        await boards_col.update_one(
+            {"track": track},
+            {"$set": {"track": track, "fingerprint": fingerprint,
+                      "bests": new_bests, **extra}}, upsert=True)
 
     if board:
         try:
             message = await channel.fetch_message(board["message_id"])
             await message.edit(embed=embed)
-            await boards_col.update_one({"track": track},
-                                        {"$set": {"fingerprint": fingerprint}})
-            return "updated"
+            await save({})
+            note = ("🏆 new best: " + ", ".join(improved)) if improved else "updated"
+            return f"✅ **{track}** — {note}{held}"
         except discord.NotFound:
-            pass                      # board was deleted - fall through and remake it
+            pass                      # board was deleted by hand - make a new one
 
     message = await channel.send(embed=embed)
-    await boards_col.update_one(
-        {"track": track},
-        {"$set": {"track": track, "channel_id": channel.id,
-                  "message_id": message.id, "fingerprint": fingerprint}},
-        upsert=True)
-    return "created"
+    await save({"channel_id": channel.id, "message_id": message.id})
+    return f"🆕 **{track}** — board posted{held}"
 
 
-async def refresh_boards(channel, tracks) -> dict:
-    """Refresh several tracks, tallying created / updated / unchanged."""
-    counts: dict[str, int] = {}
-    for track in tracks:
-        result = await refresh_board(channel, track)
-        counts[result] = counts.get(result, 0) + 1
-    return counts
+async def refresh_boards(channel, tracks) -> list[str]:
+    """Refresh several tracks, returning one readable line each."""
+    return [await refresh_board(channel, track) for track in tracks]
 
 
 SESSION_NAME = "RVRU"      # only lobbies with this in the name are ours
@@ -1129,21 +1155,31 @@ async def ingest_cmd(ctx, session_ref: str = ""):
                        f"not importing someone else's races.")
         return
 
-    races  = apply_race_rules(races_from(session))
+    races   = apply_race_rules(races_from(session))
     stored, already = await store_races(session, races)
-    voided = [r for r in races if r.finished_at and not r.counted]
+    running = [r for r in races if r.finished_at is None]
+    voided  = [r for r in races if r.finished_at and not r.counted]
 
-    summary = f"📥 **{session.get('Name', '?')}** — {stored} new race(s)"
-    if already:
-        summary += f", {already} already stored"
+    report = [f"📥 **{session.get('Name', '?')}**"]
+    if stored:
+        report.append(f"Read **{stored} new race(s)**"
+                      + (f", {already} already had." if already else "."))
+    elif already:
+        report.append(f"No new races — all {already} were already stored.")
+    else:
+        report.append("No finished races yet.")
+    for r in running:
+        report.append(f"⏱️ *{r.track} is still being raced — it will come in next time.*")
     for r in voided[:5]:
-        summary += f"\n⚠️ {r.track} — {r.reject_reason}"
-    await ctx.send(summary)
+        report.append(f"❌ **{r.track}** — this race does not count: {r.reject_reason}")
+    await ctx.send("\n".join(report))
 
     async with ctx.typing():
-        counts = await refresh_boards(ctx.channel, sorted({r.track for r in races if r.counted}))
-    if counts:
-        await ctx.send("🏁 boards: " + ", ".join(f"{n} {what}" for what, n in counts.items()))
+        lines = await refresh_boards(ctx.channel,
+                                     sorted({r.track for r in races if r.counted}))
+    if lines:
+        await ctx.send("\n".join(lines))
+    await nudge_unlinked(ctx)
 
 
 @bot.command(name="repost")
@@ -1152,11 +1188,28 @@ async def repost_cmd(ctx):
     """Refresh every track block — use after linking people."""
     tracks = await races_col.distinct("track", {"counted": True})
     if not tracks:
-        await ctx.send("No results stored yet.")
+        await ctx.send("Nothing stored yet — run `!b3l` then `!ingest` during a session.")
         return
     async with ctx.typing():
-        counts = await refresh_boards(ctx.channel, sorted(tracks))
-    await ctx.send("🏁 boards: " + ", ".join(f"{n} {what}" for what, n in counts.items()))
+        lines = await refresh_boards(ctx.channel, sorted(tracks))
+    await ctx.send("\n".join(lines))
+    await nudge_unlinked(ctx)
+
+
+async def nudge_unlinked(ctx) -> None:
+    """Say plainly if anyone's times are being held back."""
+    links = await link_map()
+    skipped = {s["name_key"] async for s in skips_col.find({}, {"name_key": 1})}
+    waiting = {}
+    async for doc in races_col.find({"counted": True}, {"entries": 1}):
+        for e in doc["entries"]:
+            if e.get("counted") and e["name_key"] not in links and e["name_key"] not in skipped:
+                waiting[e["name_key"]] = e["name_raw"]
+    if not waiting:
+        return
+    names = ", ".join(f"`{n}`" for n in sorted(waiting.values(), key=str.lower))
+    await ctx.send(f"⏳ **{len(waiting)} racer(s) have times but no Discord account yet:** "
+                   f"{names}\nLink them with `!link <name> <user id>`, then `!repost`.")
 
 @bot.command(name="unlinked")
 @admin_or_dev()
