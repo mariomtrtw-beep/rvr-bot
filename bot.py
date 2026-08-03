@@ -860,9 +860,9 @@ async def links_cmd(ctx):
 SESSION_ID_RE = re.compile(r"([0-9a-f]{32})")
 
 
-async def store_races(session: dict, races: list) -> tuple[int, int]:
-    """Save races we have not seen before. Returns (stored, already had)."""
-    stored = already = 0
+async def store_races(session: dict, races: list) -> tuple[list, int]:
+    """Save races we have not seen before. Returns (new races, already had)."""
+    fresh, already = [], 0
     for race in races:
         if race.finished_at is None:
             continue                      # still being played
@@ -892,10 +892,10 @@ async def store_races(session: dict, races: list) -> tuple[int, int]:
         result = await races_col.update_one({"game_id": race.game_id},
                                             {"$setOnInsert": doc}, upsert=True)
         if result.upserted_id is not None:
-            stored += 1
+            fresh.append(race)
         else:
             already += 1
-    return stored, already
+    return fresh, already
 
 
 async def link_map() -> dict:
@@ -978,8 +978,13 @@ async def why_nothing(track: str) -> str:
     return top
 
 
-async def refresh_board(channel, track: str) -> str:
-    """Create or edit this track's block. Returns a plain sentence about it."""
+async def refresh_board(channel, track: str, raced: set | None = None) -> str:
+    """Create or edit this track's block. Returns a plain sentence about it.
+
+    `raced` is the set of name keys that appear in the races just ingested. Only
+    they can be announced as setting a best - somebody who did not play tonight
+    must never be named, whatever the stored board happens to say.
+    """
     ranked, waiting, excluded = await best_per_track(track)
 
     if not ranked and not waiting:
@@ -997,10 +1002,15 @@ async def refresh_board(channel, track: str) -> str:
     if board and board.get("fingerprint") == fingerprint:
         return f"➖ **{track}** — no change, nobody improved{held}"
 
-    # Who actually got quicker, so the report can name them
-    improved = [f"<@{uid}> `{ms_to_time(b['time_ms'])}`" for uid, b in ranked
-                if b["name_key"] not in old_bests
-                or b["time_ms"] < old_bests[b["name_key"]]]
+    # Who actually got quicker, so the report can name them. Restricted to
+    # people who raced just now, and to boards we already had a baseline for -
+    # a brand new board has nothing to compare against, so nothing "improved".
+    improved = []
+    if raced is not None and old_bests:
+        improved = [f"<@{uid}> `{ms_to_time(b['time_ms'])}`" for uid, b in ranked
+                    if b["name_key"] in raced
+                    and (b["name_key"] not in old_bests
+                         or b["time_ms"] < old_bests[b["name_key"]])]
 
     async def save(extra: dict):
         await boards_col.update_one(
@@ -1023,9 +1033,11 @@ async def refresh_board(channel, track: str) -> str:
     return f"🆕 **{track}** — board posted{held}"
 
 
-async def refresh_boards(channel, tracks) -> list[str]:
+async def refresh_boards(channel, tracks, raced_by_track: dict | None = None) -> list[str]:
     """Refresh several tracks, returning one readable line each."""
-    return [await refresh_board(channel, track) for track in tracks]
+    return [await refresh_board(channel, track,
+                                (raced_by_track or {}).get(track))
+            for track in tracks]
 
 
 SESSION_NAME = "RVRU"      # only lobbies with this in the name are ours
@@ -1169,27 +1181,49 @@ async def ingest_cmd(ctx, session_ref: str = ""):
         return
 
     races   = apply_race_rules(races_from(session))
-    stored, already = await store_races(session, races)
+    fresh, already = await store_races(session, races)
     running = [r for r in races if r.finished_at is None]
-    voided  = [r for r in races if r.finished_at and not r.counted]
 
-    report = [f"📥 **{session.get('Name', '?')}**"]
-    if stored:
-        report.append(f"Read **{stored} new race(s)**"
-                      + (f", {already} already had." if already else "."))
-    elif already:
-        report.append(f"No new races — all {already} were already stored.")
-    else:
-        report.append("No finished races yet.")
+    # Nothing new: say so once and touch nothing, so re-running is harmless
+    if not fresh:
+        note = f"Nothing new — all {already} race(s) were already in." if already \
+               else "No finished races yet."
+        if running:
+            note += f"\n⏱️ *{running[0].track} is still being raced.*"
+        await ctx.send(f"📥 **{session.get('Name', '?')}** — {note}")
+        return
+
+    report = [f"📥 **{session.get('Name', '?')}**",
+              f"Read **{len(fresh)} new race(s)**"
+              + (f", {already} already in." if already else ".")]
     for r in running:
         report.append(f"⏱️ *{r.track} is still being raced — it will come in next time.*")
-    for r in voided[:5]:
+    for r in [x for x in fresh if not x.counted][:5]:
         report.append(f"❌ **{r.track}** — this race does not count: {r.reject_reason}")
+
+    # Individual results thrown out of races that did count, so an exclusion is
+    # visible the moment it happens rather than only if a whole track is empty
+    dropped: dict[str, list[str]] = {}
+    for r in fresh:
+        if not r.counted:
+            continue
+        for e in r.entries:
+            if not e.counted:
+                dropped.setdefault(r.track, []).append(f"{e.name_raw} ({e.reject_reason})")
+    for track, who in list(dropped.items())[:6]:
+        report.append(f"⚠️ **{track}** — not counted: " + ", ".join(who[:5]))
+
     await ctx.send("\n".join(report))
 
+    # Only tracks that actually gained a race, and only the people in them
+    raced_by_track: dict[str, set] = {}
+    for r in fresh:
+        if r.counted:
+            raced_by_track.setdefault(r.track, set()).update(
+                e.name_key for e in r.entries if e.counted)
+
     async with ctx.typing():
-        lines = await refresh_boards(ctx.channel,
-                                     sorted({r.track for r in races if r.counted}))
+        lines = await refresh_boards(ctx.channel, sorted(raced_by_track), raced_by_track)
     if lines:
         await ctx.send("\n".join(lines))
     await nudge_unlinked(ctx)
