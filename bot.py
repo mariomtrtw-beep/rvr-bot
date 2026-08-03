@@ -68,6 +68,38 @@ def admin_or_dev():
         return is_staff(ctx.author)
     return commands.check(predicate)
 
+# ── Where commands may be used ────────────────────────────────────────────────
+@bot.check
+async def commands_channel_only(ctx):
+    """Keep the leaderboard and activity feeds free of command chatter.
+
+    Nothing is enforced until a commands channel is configured, so it is not
+    possible to lock everyone out by setting the others first.
+    """
+    if ctx.guild is None:
+        return False                              # DMs have no channels or roles
+    if getattr(ctx.channel, "name", None) == DEV_CHANNEL:
+        return True
+    doc = await state_col.find_one({"key": "channels"})
+    allowed = (doc or {}).get("ids", {}).get("commands")
+    if allowed is None:
+        return True
+    return ctx.channel.id == allowed
+
+
+@bot.event
+async def on_command_error(ctx, error):
+    # A command used in the wrong channel should be ignored, not shouted about
+    if isinstance(error, commands.CheckFailure):
+        return
+    if isinstance(error, commands.CommandNotFound):
+        return
+    if isinstance(error, (commands.MissingRequiredArgument, commands.BadArgument)):
+        await ctx.send(f"❌ {error}")
+        return
+    raise error
+
+
 # ── Events ────────────────────────────────────────────────────────────────────
 @bot.event
 async def on_ready():
@@ -856,6 +888,58 @@ async def links_cmd(ctx):
     await ctx.send(embed=embed)
 
 
+# ── Channels ──────────────────────────────────────────────────────────────────
+CHANNEL_ROLES = ("leaderboard", "activity", "commands")
+
+
+async def channel_ids() -> dict:
+    doc = await state_col.find_one({"key": "channels"})
+    return (doc or {}).get("ids", {})
+
+
+async def get_channel(guild, role: str):
+    """The channel configured for a role, or None if unset or deleted."""
+    cid = (await channel_ids()).get(role)
+    return guild.get_channel(cid) if cid else None
+
+
+async def announce(guild, text: str) -> None:
+    """Post to the activity feed, if one is configured."""
+    channel = await get_channel(guild, "activity")
+    if channel:
+        await channel.send(text)
+
+
+@bot.command(name="setchannel")
+@admin_or_dev()
+async def setchannel_cmd(ctx, role: str = "", channel: discord.TextChannel = None):
+    """!setchannel leaderboard #leaderboard"""
+    role = role.lower().strip()
+    if role not in CHANNEL_ROLES:
+        await ctx.send("❌ Usage: `!setchannel <leaderboard|activity|commands> #channel`")
+        return
+    channel = channel or ctx.channel
+    ids = await channel_ids()
+    ids[role] = channel.id
+    await state_col.update_one({"key": "channels"},
+                               {"$set": {"key": "channels", "ids": ids}}, upsert=True)
+    await ctx.send(f"✅ **{role}** is now {channel.mention}.")
+
+
+@bot.command(name="channels")
+@admin_or_dev()
+async def channels_cmd(ctx):
+    ids = await channel_ids()
+    lines = []
+    for role in CHANNEL_ROLES:
+        cid = ids.get(role)
+        channel = ctx.guild.get_channel(cid) if cid else None
+        lines.append(f"**{role}** — " + (channel.mention if channel else "*not set*"))
+    embed = discord.Embed(title="📺 Channels", description="\n".join(lines), color=0x00cfff)
+    embed.set_footer(text="!setchannel <role> #channel")
+    await ctx.send(embed=embed)
+
+
 # ── Race results ──────────────────────────────────────────────────────────────
 SESSION_ID_RE = re.compile(r"([0-9a-f]{32})")
 
@@ -978,13 +1062,51 @@ async def why_nothing(track: str) -> str:
     return top
 
 
-async def refresh_board(channel, track: str, raced: set | None = None) -> str:
+def podium_events(track, ranked, old_bests, old_podium, new_podium,
+                  had_board: bool, raced: set | None) -> list[str]:
+    """Activity lines for a board that just changed.
+
+    Only for boards we already had a podium for - the first time a track is
+    posted, everyone is trivially "new" and none of it is news.
+    """
+    if not had_board or raced is None or not ranked:
+        return []
+
+    lines, by_key = [], {b["name_key"]: (uid, b) for uid, b in ranked}
+
+    # P1 changed hands, or the holder beat their own record
+    if new_podium and new_podium[0] != (old_podium[0] if old_podium else None):
+        uid, best = by_key[new_podium[0]]
+        if new_podium[0] in raced:
+            beaten = old_podium[0] if old_podium else None
+            margin = ""
+            if beaten and beaten in old_bests:
+                gap = (old_bests[beaten] - best["time_ms"]) / 1000
+                margin = f" — beat <@{by_key[beaten][0]}> by `{gap:.3f}s`" \
+                    if beaten in by_key else ""
+            lines.append(f"🏆 <@{uid}> set a new **{SESSION_NAME} track record** on "
+                         f"**{track}**\n`{ms_to_time(best['time_ms'])}`{margin}")
+
+    # Someone new on the podium who was not there before
+    for place, key in enumerate(new_podium[1:], start=2):
+        if key in old_podium[:3] or key not in raced or key not in by_key:
+            continue
+        uid, best = by_key[key]
+        lines.append(f"{['🥈','🥉'][place-2]} <@{uid}> moved into **P{place}** on "
+                     f"**{track}** — `{ms_to_time(best['time_ms'])}`")
+    return lines
+
+
+async def refresh_board(channel, track: str, raced: set | None = None,
+                        events: list | None = None) -> str:
     """Create or edit this track's block. Returns a plain sentence about it.
 
     `raced` is the set of name keys that appear in the races just ingested. Only
     they can be announced as setting a best - somebody who did not play tonight
-    must never be named, whatever the stored board happens to say.
+    must never be named, whatever the stored board happens to say. Anything worth
+    posting to the activity feed is appended to `events`.
     """
+    events = events if events is not None else []
     ranked, waiting, excluded = await best_per_track(track)
 
     if not ranked and not waiting:
@@ -994,13 +1116,19 @@ async def refresh_board(channel, track: str, raced: set | None = None) -> str:
     fingerprint = embed.description
     board       = await boards_col.find_one({"track": track})
     old_bests   = (board or {}).get("bests", {})
+    old_podium  = (board or {}).get("podium", [])
     new_bests   = {b["name_key"]: b["time_ms"] for _uid, b in ranked}
+    new_podium  = [b["name_key"] for _uid, b in ranked[:3]]
 
     held = f"  ·  {len(waiting)} waiting on a link" if waiting else ""
 
     # Nothing changed - do not touch Discord at all
     if board and board.get("fingerprint") == fingerprint:
         return f"➖ **{track}** — no change, nobody improved{held}"
+
+    # Work out what is worth announcing, before the board is overwritten
+    events.extend(podium_events(track, ranked, old_bests, old_podium, new_podium,
+                                had_board=bool(old_podium), raced=raced))
 
     # Who actually got quicker, so the report can name them. Restricted to
     # people who raced just now, and to boards we already had a baseline for -
@@ -1016,7 +1144,7 @@ async def refresh_board(channel, track: str, raced: set | None = None) -> str:
         await boards_col.update_one(
             {"track": track},
             {"$set": {"track": track, "fingerprint": fingerprint,
-                      "bests": new_bests, **extra}}, upsert=True)
+                      "bests": new_bests, "podium": new_podium, **extra}}, upsert=True)
 
     if board:
         try:
@@ -1033,11 +1161,13 @@ async def refresh_board(channel, track: str, raced: set | None = None) -> str:
     return f"🆕 **{track}** — board posted{held}"
 
 
-async def refresh_boards(channel, tracks, raced_by_track: dict | None = None) -> list[str]:
-    """Refresh several tracks, returning one readable line each."""
-    return [await refresh_board(channel, track,
-                                (raced_by_track or {}).get(track))
-            for track in tracks]
+async def refresh_boards(channel, tracks, raced_by_track: dict | None = None
+                         ) -> tuple[list[str], list[str]]:
+    """Refresh several tracks. Returns (report lines, activity events)."""
+    events: list[str] = []
+    lines = [await refresh_board(channel, track, (raced_by_track or {}).get(track), events)
+             for track in tracks]
+    return lines, events
 
 
 SESSION_NAME = "RVRU"      # only lobbies with this in the name are ours
@@ -1149,6 +1279,33 @@ async def b3l_cmd(ctx):
     embed.set_footer(text="run !ingest before closing the lobby — results vanish with it")
     await ctx.send(embed=embed)
 
+    if not problems:
+        await announce(ctx.guild,
+                       f"🏁 **{session.get('Name','?')} is live** — join "
+                       f"`{listed.get('host','?')}:{session.get('Port','?')}`\n"
+                       f"{REQUIRED_LAPS} laps · pro cars · no pickups")
+
+
+@bot.command(name="rebuildboards")
+@admin_or_dev()
+async def rebuildboards_cmd(ctx):
+    """Forget where the boards were posted and put them up fresh.
+
+    Needed after moving the leaderboard channel - the old messages stay where
+    they are and should be deleted by hand.
+    """
+    board_ch = await get_channel(ctx.guild, "leaderboard") or ctx.channel
+    await boards_col.update_many({}, {"$unset": {"message_id": "", "channel_id": "",
+                                                 "fingerprint": ""}})
+    tracks = await races_col.distinct("track", {"counted": True})
+    if not tracks:
+        await ctx.send("Nothing stored yet.")
+        return
+    async with ctx.typing():
+        lines, _ = await refresh_boards(board_ch, sorted(tracks))
+    await ctx.send(f"🔁 Rebuilt {len(lines)} board(s) in {board_ch.mention}. "
+                   f"Delete the old messages by hand.")
+
 
 @bot.command(name="ingest")
 @admin_or_dev()
@@ -1222,10 +1379,23 @@ async def ingest_cmd(ctx, session_ref: str = ""):
             raced_by_track.setdefault(r.track, set()).update(
                 e.name_key for e in r.entries if e.counted)
 
+    board_ch = await get_channel(ctx.guild, "leaderboard") or ctx.channel
     async with ctx.typing():
-        lines = await refresh_boards(ctx.channel, sorted(raced_by_track), raced_by_track)
+        lines, events = await refresh_boards(board_ch, sorted(raced_by_track),
+                                             raced_by_track)
     if lines:
         await ctx.send("\n".join(lines))
+    if board_ch is ctx.channel and not await get_channel(ctx.guild, "leaderboard"):
+        await ctx.send("*(no leaderboard channel set — boards are here. "
+                       "`!setchannel leaderboard #channel` to move them.)*")
+
+    for event in events:
+        await announce(ctx.guild, event)
+
+    racers = {e.name_key for r in fresh if r.counted for e in r.entries if e.counted}
+    await announce(ctx.guild,
+                   f"✅ **{session.get('Name','?')}** — {len(fresh)} race(s) on "
+                   f"{len(raced_by_track)} track(s), {len(racers)} racer(s)")
     await nudge_unlinked(ctx)
 
 
@@ -1237,8 +1407,9 @@ async def repost_cmd(ctx):
     if not tracks:
         await ctx.send("Nothing stored yet — run `!b3l` then `!ingest` during a session.")
         return
+    board_ch = await get_channel(ctx.guild, "leaderboard") or ctx.channel
     async with ctx.typing():
-        lines = await refresh_boards(ctx.channel, sorted(tracks))
+        lines, _events = await refresh_boards(board_ch, sorted(tracks))
     await ctx.send("\n".join(lines))
     await nudge_unlinked(ctx)
 
@@ -1759,6 +1930,9 @@ async def rvr_help(ctx):
     embed = discord.Embed(title="🤖 RVR Bot Commands", color=discord.Color.blurple())
     embed.add_field(name="!whois <ingame name>",  value="Show which Discord user an in-game name belongs to", inline=False)
     embed.add_field(name="── Admin only ──",      value="\u200b", inline=False)
+    embed.add_field(name="!setchannel <role> #chan",     value="Set the leaderboard / activity / commands channel", inline=False)
+    embed.add_field(name="!channels",                    value="Show which channel is used for what", inline=False)
+    embed.add_field(name="!rebuildboards",               value="Repost every board (after moving the leaderboard channel)", inline=False)
     embed.add_field(name="!b3l",                         value="Find the live session, check its settings, and arm it for ingesting", inline=False)
     embed.add_field(name="!ingest [session id]",     value="Pull the armed session's races in and update the boards", inline=False)
     embed.add_field(name="!repost <session id>",         value="Post a session's results again, after linking people", inline=False)
