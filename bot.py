@@ -905,16 +905,22 @@ async def link_map() -> dict:
         out[a["name_key"]] = a["uid"]
     return out
 
-async def best_per_track(track: str) -> tuple[list, dict]:
+async def best_per_track(track: str) -> tuple[list, dict, dict]:
     """Each player's fastest run on a track, plus anyone not linked yet.
 
     A repeat run only replaces a stored time if it is faster, so a board moves
     only when someone sets a personal best.
     """
     best: dict[str, dict] = {}
+    rejects: dict[str, dict] = {}
     async for doc in races_col.find({"track": track, "counted": True}, {"entries": 1}):
         for entry in doc["entries"]:
             if not entry.get("counted"):
+                # Remember why, in case nothing of theirs ever counts here
+                reasons = rejects.setdefault(entry["name_key"],
+                                             {"name_raw": entry["name_raw"], "why": {}})["why"]
+                reason = entry.get("reject") or "not counted"
+                reasons[reason] = reasons.get(reason, 0) + 1
                 continue
             prev = best.get(entry["name_key"])
             if prev is None:
@@ -927,10 +933,13 @@ async def best_per_track(track: str) -> tuple[list, dict]:
     links   = await link_map()
     ranked  = sorted((b for k, b in best.items() if k in links), key=lambda b: b["time_ms"])
     waiting = {k: b["name_raw"] for k, b in best.items() if k not in links}
-    return [(links[b["name_key"]], b) for b in ranked], waiting
+    # Only worth showing for people who got no usable time here at all
+    excluded = {k: (v["name_raw"], max(v["why"], key=v["why"].get))
+                for k, v in rejects.items() if k not in best}
+    return [(links[b["name_key"]], b) for b in ranked], waiting, excluded
 
 
-def board_embed(track: str, ranked: list, waiting: dict) -> discord.Embed:
+def board_embed(track: str, ranked: list, waiting: dict, excluded: dict) -> discord.Embed:
     lines = []
     for place, (uid, b) in enumerate(ranked, 1):
         medal = ["🥇", "🥈", "🥉"][place - 1] if place <= 3 else f"`#{place}`"
@@ -942,6 +951,10 @@ def board_embed(track: str, ranked: list, waiting: dict) -> discord.Embed:
     body = "\n".join(lines) if lines else "*nobody linked yet*"
     if waiting:
         body += f"\n\n⏳ {len(waiting)} unlinked — see `!unlinked`"
+    if excluded:
+        shown = ", ".join(f"**{raw}** ({why})" for raw, why in
+                          sorted(excluded.values(), key=lambda p: p[0].lower())[:6])
+        body += f"\n\n⚠️ Not counted here: {shown}"
     embed = discord.Embed(title=f"🏁 {track}", description=body, color=0x00cfff)
     embed.set_footer(text="updates when someone sets a personal best")
     return embed
@@ -967,12 +980,12 @@ async def why_nothing(track: str) -> str:
 
 async def refresh_board(channel, track: str) -> str:
     """Create or edit this track's block. Returns a plain sentence about it."""
-    ranked, waiting = await best_per_track(track)
+    ranked, waiting, excluded = await best_per_track(track)
 
     if not ranked and not waiting:
         return f"⚠️ **{track}** — nothing counted ({await why_nothing(track)})"
 
-    embed       = board_embed(track, ranked, waiting)
+    embed       = board_embed(track, ranked, waiting, excluded)
     fingerprint = embed.description
     board       = await boards_col.find_one({"track": track})
     old_bests   = (board or {}).get("bests", {})
