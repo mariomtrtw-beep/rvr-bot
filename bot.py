@@ -989,6 +989,16 @@ async def link_map() -> dict:
         out[a["name_key"]] = a["uid"]
     return out
 
+def actually_raced(entry) -> bool:
+    """Did this person take part, or were they just sitting in the lobby?
+
+    Every race lists everyone connected, so people who sat one out appear with
+    zeroed times. Reporting them as "did not finish" names players who were
+    never on the track.
+    """
+    return (entry.get("time_ms") or 0) > 0 or (entry.get("best_lap_ms") or 0) > 0
+
+
 async def best_per_track(track: str) -> tuple[list, dict, dict]:
     """Each player's fastest run on a track, plus anyone not linked yet.
 
@@ -1000,6 +1010,8 @@ async def best_per_track(track: str) -> tuple[list, dict, dict]:
     async for doc in races_col.find({"track": track, "counted": True}, {"entries": 1}):
         for entry in doc["entries"]:
             if not entry.get("counted"):
+                if not actually_raced(entry):
+                    continue          # sat this race out, not a result at all
                 # Remember why, in case nothing of theirs ever counts here
                 reasons = rejects.setdefault(entry["name_key"],
                                              {"name_raw": entry["name_raw"], "why": {}})["why"]
@@ -1023,7 +1035,12 @@ async def best_per_track(track: str) -> tuple[list, dict, dict]:
     return [(links[b["name_key"]], b) for b in ranked], waiting, excluded
 
 
-def board_embed(track: str, ranked: list, waiting: dict, excluded: dict) -> discord.Embed:
+def board_embed(track: str, ranked: list) -> discord.Embed:
+    """The leaderboard block: the ranking and nothing else.
+
+    Held and excluded results are reported where !ingest was run, not here - the
+    leaderboard channel stays readable and free of bookkeeping.
+    """
     lines = []
     for place, (uid, b) in enumerate(ranked, 1):
         medal = ["🥇", "🥈", "🥉"][place - 1] if place <= 3 else f"`#{place}`"
@@ -1032,13 +1049,7 @@ def board_embed(track: str, ranked: list, waiting: dict, excluded: dict) -> disc
         lines.append(f"{medal} <@{uid}> — `{ms_to_time(b['time_ms'])}`"
                      f"  ·  best lap `{ms_to_time(b['best_lap_ms'])}`")
 
-    body = "\n".join(lines) if lines else "*nobody linked yet*"
-    if waiting:
-        body += f"\n\n⏳ {len(waiting)} unlinked — see `!unlinked`"
-    if excluded:
-        shown = ", ".join(f"**{raw}** ({why})" for raw, why in
-                          sorted(excluded.values(), key=lambda p: p[0].lower())[:6])
-        body += f"\n\n⚠️ Not counted here: {shown}"
+    body = "\n".join(lines) if lines else "*no times yet*"
     embed = discord.Embed(title=f"🏁 {track}", description=body, color=0x00cfff)
     embed.set_footer(text="updates when someone sets a personal best")
     return embed
@@ -1112,7 +1123,7 @@ async def refresh_board(channel, track: str, raced: set | None = None,
     if not ranked and not waiting:
         return f"⚠️ **{track}** — nothing counted ({await why_nothing(track)})"
 
-    embed       = board_embed(track, ranked, waiting, excluded)
+    embed       = board_embed(track, ranked)
     fingerprint = embed.description
     board       = await boards_col.find_one({"track": track})
     old_bests   = (board or {}).get("bests", {})
@@ -1286,9 +1297,9 @@ async def b3l_cmd(ctx):
                        f"{REQUIRED_LAPS} laps · pro cars · no pickups")
 
 
-@bot.command(name="rebuildboards")
+@bot.command(name="refresh", aliases=["rebuildboards"])
 @admin_or_dev()
-async def rebuildboards_cmd(ctx):
+async def refresh_cmd(ctx):
     """Forget where the boards were posted and put them up fresh.
 
     Needed after moving the leaderboard channel - the old messages stay where
@@ -1365,7 +1376,9 @@ async def ingest_cmd(ctx, session_ref: str = ""):
         if not r.counted:
             continue
         for e in r.entries:
-            if not e.counted:
+            # Skip people who sat the race out - they show up in every race's
+            # entry list with zeroed times and were never on the track
+            if not e.counted and (e.time_ms > 0 or e.best_lap_ms > 0):
                 dropped.setdefault(r.track, []).append(f"{e.name_raw} ({e.reject_reason})")
     for track, who in list(dropped.items())[:6]:
         report.append(f"⚠️ **{track}** — not counted: " + ", ".join(who[:5]))
@@ -1932,7 +1945,7 @@ async def rvr_help(ctx):
     embed.add_field(name="── Admin only ──",      value="\u200b", inline=False)
     embed.add_field(name="!setchannel <role> #chan",     value="Set the leaderboard / activity / commands channel", inline=False)
     embed.add_field(name="!channels",                    value="Show which channel is used for what", inline=False)
-    embed.add_field(name="!rebuildboards",               value="Repost every board (after moving the leaderboard channel)", inline=False)
+    embed.add_field(name="!refresh",                      value="Post every track board again in the leaderboard channel", inline=False)
     embed.add_field(name="!b3l",                         value="Find the live session, check its settings, and arm it for ingesting", inline=False)
     embed.add_field(name="!ingest [session id]",     value="Pull the armed session's races in and update the boards", inline=False)
     embed.add_field(name="!repost <session id>",         value="Post a session's results again, after linking people", inline=False)
