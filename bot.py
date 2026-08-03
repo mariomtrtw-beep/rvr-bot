@@ -1371,14 +1371,24 @@ async def ingest_cmd(ctx, session_ref: str = ""):
 
     # Individual results thrown out of races that did count, so an exclusion is
     # visible the moment it happens rather than only if a whole track is empty
+    # Anyone who also set a valid time on this track needs no mention - a
+    # restarted race is not a failure worth reporting
+    scored: dict[str, set] = {}
+    for r in fresh:
+        if r.counted:
+            scored.setdefault(r.track, set()).update(
+                e.name_key for e in r.entries if e.counted)
+
     dropped: dict[str, list[str]] = {}
     for r in fresh:
         if not r.counted:
             continue
         for e in r.entries:
+            if e.counted or e.name_key in scored.get(r.track, set()):
+                continue
             # Skip people who sat the race out - they show up in every race's
             # entry list with zeroed times and were never on the track
-            if not e.counted and (e.time_ms > 0 or e.best_lap_ms > 0):
+            if e.time_ms > 0 or e.best_lap_ms > 0:
                 dropped.setdefault(r.track, []).append(f"{e.name_raw} ({e.reject_reason})")
     for track, who in list(dropped.items())[:6]:
         report.append(f"⚠️ **{track}** — not counted: " + ", ".join(who[:5]))
@@ -1402,14 +1412,45 @@ async def ingest_cmd(ctx, session_ref: str = ""):
         await ctx.send("*(no leaderboard channel set — boards are here. "
                        "`!setchannel leaderboard #channel` to move them.)*")
 
+    # Records and podium moves are news. Import counts are bookkeeping and stay
+    # in the command channel - !endsession posts the wrap-up when it is over.
     for event in events:
         await announce(ctx.guild, event)
-
-    racers = {e.name_key for r in fresh if r.counted for e in r.entries if e.counted}
-    await announce(ctx.guild,
-                   f"✅ **{session.get('Name','?')}** — {len(fresh)} race(s) on "
-                   f"{len(raced_by_track)} track(s), {len(racers)} racer(s)")
     await nudge_unlinked(ctx)
+
+
+@bot.command(name="endsession")
+@admin_or_dev()
+async def endsession_cmd(ctx):
+    """Post the session wrap-up to the activity feed and disarm it."""
+    doc = await state_col.find_one({"key": "active_session"})
+    if not doc or not doc.get("session_id"):
+        await ctx.send("❌ No session armed — `!b3l` arms one.")
+        return
+
+    races = await races_col.find({"session_id": doc["session_id"]}).to_list(None)
+    counted = [r for r in races if r.get("counted")]
+    if not counted:
+        await ctx.send("Nothing was ingested for that session.")
+        return
+
+    links = await link_map()
+    racers, tracks = {}, set()
+    for race in counted:
+        tracks.add(race["track"])
+        for e in race["entries"]:
+            if e.get("counted"):
+                racers[e["name_key"]] = e["name_raw"]
+
+    named = ", ".join(f"<@{links[k]}>" if k in links else f"**{v}**"
+                      for k, v in sorted(racers.items(), key=lambda kv: kv[1].lower()))
+    await announce(ctx.guild,
+                   f"🏁 **{doc.get('name', 'RVRU')}** finished — "
+                   f"{len(counted)} race(s) across {len(tracks)} track(s)\n{named}")
+    await state_col.update_one({"key": "active_session"},
+                               {"$unset": {"session_id": "", "name": ""}})
+    await ctx.send(f"✅ Wrapped up **{doc.get('name', '?')}** — "
+                   f"{len(counted)} race(s), {len(tracks)} track(s), {len(racers)} racer(s).")
 
 
 @bot.command(name="repost")
@@ -1949,6 +1990,7 @@ async def rvr_help(ctx):
     embed.add_field(name="!b3l",                         value="Find the live session, check its settings, and arm it for ingesting", inline=False)
     embed.add_field(name="!ingest [session id]",     value="Pull the armed session's races in and update the boards", inline=False)
     embed.add_field(name="!repost <session id>",         value="Post a session's results again, after linking people", inline=False)
+    embed.add_field(name="!endsession",                  value="Post the session wrap-up to the activity feed and disarm it", inline=False)
     embed.add_field(name="!unlinked",                    value="Racers with held results and no Discord user yet", inline=False)
     embed.add_field(name="!link <ingame name> @user",    value="Link an in-game name to a Discord user so results score to them", inline=False)
     embed.add_field(name="!linksuggest",                 value="Show which in-game names auto-match a Discord member (no changes)", inline=False)
