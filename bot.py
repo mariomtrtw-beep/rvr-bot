@@ -1139,7 +1139,13 @@ async def refresh_board(channel, track: str, raced: set | None = None,
     fingerprint = embed.description
     board       = await boards_col.find_one({"track": track})
     old_bests   = (board or {}).get("bests", {})
-    old_podium  = (board or {}).get("podium", [])
+    # Boards written before podiums were stored still know everyone's best time,
+    # so the previous order can be worked out instead of losing the first result
+    # after the upgrade to a missing baseline.
+    old_podium  = (board or {}).get("podium")
+    if old_podium is None and old_bests:
+        old_podium = sorted(old_bests, key=lambda k: old_bests[k])[:3]
+    old_podium  = old_podium or []
     new_bests   = {b["name_key"]: b["time_ms"] for _uid, b in ranked}
     new_podium  = [b["name_key"] for _uid, b in ranked[:3]]
 
@@ -1345,10 +1351,16 @@ async def b3l_cmd(ctx, session_ref: str = ""):
     embed.set_footer(text="run !ingest before closing the lobby — results vanish with it")
     await ctx.send(embed=embed)
 
-    if not problems:
-        await announce(ctx.guild,
-                       f"🏁 **{session.get('Name','?')} is live** — join `{join}`\n"
-                       f"{REQUIRED_LAPS} laps · pro cars · no pickups")
+    # Announce regardless of settings - people still want the join address, and
+    # silently posting nothing looked like the feed was broken
+    warning = ("\n⚠️ *settings still need fixing: " + "; ".join(problems) + "*") if problems else ""
+    await announce(ctx.guild,
+                   f"🏁 **{session.get('Name','?')} is live** — join `{join}`\n"
+                   f"{REQUIRED_LAPS} laps · pro cars · no pickups{warning}")
+
+    if not await get_channel(ctx.guild, "activity"):
+        await ctx.send("*(no activity channel set — nothing was announced. "
+                       "`!setchannel activity #channel`)*")
 
 
 @bot.command(name="refresh", aliases=["rebuildboards"])
