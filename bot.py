@@ -1269,7 +1269,7 @@ async def b3l_cmd(ctx, session_ref: str = ""):
     Private lobbies work in full - the coordinator simply never publishes their
     id, so it has to be pasted once from the host's browser URL.
     """
-    listed = {}
+    listed, session, already = {}, None, False
 
     if session_ref:
         match = SESSION_ID_RE.search(session_ref)
@@ -1279,6 +1279,19 @@ async def b3l_cmd(ctx, session_ref: str = ""):
             return
         session_id = match.group(1)
     else:
+        # A session already armed and still up needs no rediscovery - asking for
+        # a private id again when one was given is just annoying.
+        armed = await active_session_id()
+        if armed:
+            async with ctx.typing():
+                try:
+                    session = await asyncio.to_thread(fetch_session, armed)
+                except Exception:
+                    session = None
+            if session is not None:
+                session_id, already = armed, True
+
+    if session is None and not session_ref:
         async with ctx.typing():
             try:
                 sessions = await asyncio.to_thread(live_sessions)
@@ -1313,12 +1326,14 @@ async def b3l_cmd(ctx, session_ref: str = ""):
 
         listed = usable[0]
         session_id = listed["id"]
-    async with ctx.typing():
-        try:
-            session = await asyncio.to_thread(fetch_session, session_id)
-        except Exception as e:
-            await ctx.send(f"❌ Could not read that session: `{e.__class__.__name__}`")
-            return
+
+    if session is None:
+        async with ctx.typing():
+            try:
+                session = await asyncio.to_thread(fetch_session, session_id)
+            except Exception as e:
+                await ctx.send(f"❌ Could not read that session: `{e.__class__.__name__}`")
+                return
     if session is None:
         await ctx.send("❌ No session with that id — it may have closed, or the id is wrong.")
         return
@@ -1348,8 +1363,13 @@ async def b3l_cmd(ctx, session_ref: str = ""):
                         value=f"{REQUIRED_LAPS} laps · no pickups · pro cars"
                               + ("  ·  *private, armed by id*" if private else ""),
                         inline=False)
-    embed.set_footer(text="run !ingest before closing the lobby — results vanish with it")
+    embed.set_footer(
+        text=("already armed — !ingest when you are done" if already
+              else "run !ingest before closing the lobby — results vanish with it"))
     await ctx.send(embed=embed)
+
+    if already:
+        return                # checking on a session is not news, do not re-announce
 
     # Announce regardless of settings - people still want the join address, and
     # silently posting nothing looked like the feed was broken
