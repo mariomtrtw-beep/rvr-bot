@@ -4,6 +4,7 @@ import os
 import re
 import io
 import asyncio
+import traceback
 from datetime import datetime, timezone
 from motor.motor_asyncio import AsyncIOMotorClient
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
@@ -97,7 +98,18 @@ async def on_command_error(ctx, error):
     if isinstance(error, (commands.MissingRequiredArgument, commands.BadArgument)):
         await ctx.send(f"❌ {error}")
         return
-    raise error
+
+    # Anything else used to vanish into the console, so a command that died
+    # halfway just went quiet. Say so where it was typed.
+    original = getattr(error, "original", error)
+    if isinstance(original, discord.Forbidden):
+        await ctx.send("❌ I am missing permissions there — I need **View Channel**, "
+                       "**Send Messages**, **Embed Links** and **Read Message History** "
+                       "in the leaderboard and activity channels.")
+    else:
+        await ctx.send(f"❌ `!{ctx.command}` failed: "
+                       f"`{original.__class__.__name__}: {original}`"[:1900])
+    traceback.print_exception(type(original), original, original.__traceback__)
 
 
 # ── Events ────────────────────────────────────────────────────────────────────
@@ -1157,15 +1169,19 @@ async def refresh_board(channel, track: str, raced: set | None = None,
             {"$set": {"track": track, "fingerprint": fingerprint,
                       "bests": new_bests, "podium": new_podium, **extra}}, upsert=True)
 
-    if board:
+    # A board row can exist without a message: !refresh clears the id on purpose,
+    # and an older row may predate it. Only try to edit when we really have one,
+    # and only in the channel it was posted to.
+    existing = board.get("message_id") if board else None
+    if existing and board.get("channel_id") == channel.id:
         try:
-            message = await channel.fetch_message(board["message_id"])
+            message = await channel.fetch_message(existing)
             await message.edit(embed=embed)
             await save({})
             note = ("🏆 new best: " + ", ".join(improved)) if improved else "updated"
             return f"✅ **{track}** — {note}{held}"
-        except discord.NotFound:
-            pass                      # board was deleted by hand - make a new one
+        except (discord.NotFound, discord.Forbidden):
+            pass                      # deleted by hand, or we cannot see it - repost
 
     message = await channel.send(embed=embed)
     await save({"channel_id": channel.id, "message_id": message.id})
@@ -1174,10 +1190,23 @@ async def refresh_board(channel, track: str, raced: set | None = None,
 
 async def refresh_boards(channel, tracks, raced_by_track: dict | None = None
                          ) -> tuple[list[str], list[str]]:
-    """Refresh several tracks. Returns (report lines, activity events)."""
+    """Refresh several tracks. Returns (report lines, activity events).
+
+    One track failing must not take the rest down with it, so each is caught
+    and reported in place.
+    """
     events: list[str] = []
-    lines = [await refresh_board(channel, track, (raced_by_track or {}).get(track), events)
-             for track in tracks]
+    lines: list[str] = []
+    for track in tracks:
+        try:
+            lines.append(await refresh_board(channel, track,
+                                             (raced_by_track or {}).get(track), events))
+        except discord.Forbidden:
+            lines.append(f"🚫 **{track}** — no permission to post in "
+                         f"{channel.mention}")
+        except Exception as e:                     # keep going, name the failure
+            lines.append(f"💥 **{track}** — {e.__class__.__name__}: {e}")
+            traceback.print_exc()
     return lines, events
 
 
