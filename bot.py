@@ -1236,8 +1236,8 @@ def check_settings(session: dict) -> list[str]:
         problems.append("pickups are ON, should be off")
     if (session.get("CarRating") or "").lower() != "pro":
         problems.append(f"car class is {session.get('CarRating')!r}, should be 'pro'")
-    if not session.get("Public"):
-        problems.append("session is private, so results cannot be read")
+    # Private is fine: the coordinator withholds the id, not the data, so a
+    # private lobby armed with !b3l <id> reads exactly like a public one.
     return problems
 
 
@@ -1257,56 +1257,80 @@ async def active_session_id() -> str | None:
 
 @bot.command(name="b3l")
 @admin_or_dev()
-async def b3l_cmd(ctx):
-    """Find the live coordinator session and arm it for ingesting."""
-    async with ctx.typing():
-        try:
-            sessions = await asyncio.to_thread(live_sessions)
-        except Exception as e:
-            await ctx.send(f"❌ Could not reach the coordinator: `{e.__class__.__name__}`")
+async def b3l_cmd(ctx, session_ref: str = ""):
+    """Arm a session: !b3l to find a public one, or !b3l <id> for a private one.
+
+    Private lobbies work in full - the coordinator simply never publishes their
+    id, so it has to be pasted once from the host's browser URL.
+    """
+    listed = {}
+
+    if session_ref:
+        match = SESSION_ID_RE.search(session_ref)
+        if not match:
+            await ctx.send("❌ That does not look like a session id. Open your lobby on "
+                           "net.rv.gl and copy the 32-character id from the URL.")
+            return
+        session_id = match.group(1)
+    else:
+        async with ctx.typing():
+            try:
+                sessions = await asyncio.to_thread(live_sessions)
+            except Exception as e:
+                await ctx.send(f"❌ Could not reach the coordinator: "
+                               f"`{e.__class__.__name__}`")
+                return
+
+        ours   = [s for s in sessions if is_ours(s.get("name"))]
+        usable = [s for s in ours if s.get("id")]
+
+        if not usable:
+            if ours:
+                await ctx.send(
+                    f"🔒 **{ours[0].get('name')}** is live but private, so the "
+                    f"coordinator does not publish its id.\n"
+                    f"Open it on net.rv.gl and paste the id from the URL:\n"
+                    f"`!b3l <session id>` — everything else works exactly the same.")
+            else:
+                other = f" ({len(sessions)} other session(s) up, ignored)" if sessions else ""
+                await ctx.send(f"❌ No **{SESSION_NAME}** session is live{other}. "
+                               f"Put `{SESSION_NAME}` in the lobby name, or arm a "
+                               f"private one with `!b3l <session id>`.")
             return
 
-    ours = [s for s in sessions if is_ours(s.get("name"))]
-    usable = [s for s in ours if s.get("id")]
+        if len(usable) > 1:
+            listing = "\n".join(f"`{s['id']}` — **{s.get('name','?')}** "
+                                f"({s.get('player_count', '?')} players)" for s in usable[:10])
+            await ctx.send(f"⚠️ {len(usable)} **{SESSION_NAME}** sessions are live — "
+                           f"pick one with `!b3l <id>`:\n{listing}")
+            return
 
-    if not usable:
-        if ours:
-            await ctx.send(f"❌ Found **{ours[0].get('name')}** but it is private — "
-                           f"a private session exposes no id, so its results cannot be "
-                           f"read. Make it public and run `!b3l` again.")
-        else:
-            other = f" ({len(sessions)} other session(s) up, ignored)" if sessions else ""
-            await ctx.send(f"❌ No **{SESSION_NAME}** session is live{other}. "
-                           f"Put `{SESSION_NAME}` in the lobby name.")
-        return
-
-    if len(usable) > 1:
-        listing = "\n".join(f"`{s['id']}` — **{s.get('name','?')}** "
-                            f"({s.get('player_count', '?')} players)" for s in usable[:10])
-        await ctx.send(f"⚠️ {len(usable)} **{SESSION_NAME}** sessions are live — "
-                       f"pick one with `!ingest <id>`:\n{listing}")
-        return
-
-    listed = usable[0]
+        listed = usable[0]
+        session_id = listed["id"]
     async with ctx.typing():
         try:
-            session = await asyncio.to_thread(fetch_session, listed["id"])
+            session = await asyncio.to_thread(fetch_session, session_id)
         except Exception as e:
             await ctx.send(f"❌ Could not read that session: `{e.__class__.__name__}`")
             return
     if session is None:
-        await ctx.send("❌ That session vanished between listing and reading it.")
+        await ctx.send("❌ No session with that id — it may have closed, or the id is wrong.")
+        return
+    if not is_ours(session.get("Name")):
+        await ctx.send(f"❌ **{session.get('Name')}** is not an {SESSION_NAME} session.")
         return
 
     await set_active_session(session, ctx.author.id)
     problems = check_settings(session)
+    host = listed.get("host") or "eu.rv.gl"
+    join = f"{host}:{session.get('Port', '?')}"
+    private = not session.get("Public")
 
     embed = discord.Embed(
-        title=f"🏁 {session.get('Name', '?')}",
+        title=("🔒 " if private else "🏁 ") + str(session.get("Name", "?")),
         description=f"```{session.get('ID')}```",
         color=0xff5555 if problems else 0x00cfff)
-    embed.add_field(name="Join",
-                    value=f"`{listed.get('host', '?')}:{session.get('Port', '?')}`", inline=True)
+    embed.add_field(name="Join", value=f"`{join}`", inline=True)
     embed.add_field(name="Laps", value=str((session.get("GameData") or {}).get("NumLaps")),
                     inline=True)
     embed.add_field(name="Cars", value=str(session.get("CarRating")), inline=True)
@@ -1315,14 +1339,15 @@ async def b3l_cmd(ctx):
                         value="\n".join(f"• {p}" for p in problems), inline=False)
     else:
         embed.add_field(name="✅ Settings look right",
-                        value="3 laps, no pickups, pro cars, public", inline=False)
+                        value=f"{REQUIRED_LAPS} laps · no pickups · pro cars"
+                              + ("  ·  *private, armed by id*" if private else ""),
+                        inline=False)
     embed.set_footer(text="run !ingest before closing the lobby — results vanish with it")
     await ctx.send(embed=embed)
 
     if not problems:
         await announce(ctx.guild,
-                       f"🏁 **{session.get('Name','?')} is live** — join "
-                       f"`{listed.get('host','?')}:{session.get('Port','?')}`\n"
+                       f"🏁 **{session.get('Name','?')} is live** — join `{join}`\n"
                        f"{REQUIRED_LAPS} laps · pro cars · no pickups")
 
 
@@ -2016,7 +2041,7 @@ async def rvr_help(ctx):
     embed.add_field(name="!setchannel <role> #chan",     value="Set the leaderboard / activity / commands channel", inline=False)
     embed.add_field(name="!channels",                    value="Show which channel is used for what", inline=False)
     embed.add_field(name="!refresh",                      value="Post every track board again in the leaderboard channel", inline=False)
-    embed.add_field(name="!b3l",                         value="Find the live session, check its settings, and arm it for ingesting", inline=False)
+    embed.add_field(name="!b3l",                         value="Arm the live session. Add the id for a private lobby: !b3l <id>", inline=False)
     embed.add_field(name="!ingest [session id]",     value="Pull the armed session's races in and update the boards", inline=False)
     embed.add_field(name="!repost <session id>",         value="Post a session's results again, after linking people", inline=False)
     embed.add_field(name="!endsession",                  value="Post the session wrap-up to the activity feed and disarm it", inline=False)
