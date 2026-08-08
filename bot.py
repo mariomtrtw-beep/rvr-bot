@@ -1191,7 +1191,7 @@ def generate_standings_image(rows: list[dict], icons: dict | None = None) -> io.
     """
     icons = icons or {}
     W, PAD = 1000, 44
-    ROW_H, HEADER_H, FOOTER_H = 54, 158, 34
+    ROW_H, HEADER_H, FOOTER_H = 67, 197, 42     # +~25% over the original sizing
     H = HEADER_H + len(rows) * ROW_H + FOOTER_H
 
     BG_TOP, BG_BOT = (2, 8, 22), (5, 3, 26)
@@ -1204,27 +1204,29 @@ def generate_standings_image(rows: list[dict], icons: dict | None = None) -> io.
         c = tuple(int(BG_TOP[i] + t * (BG_BOT[i] - BG_TOP[i])) for i in range(3))
         draw.line([(0, y), (W - 1, y)], fill=c)
 
-    fnt_title = _load_font(True, 40)
-    fnt_hdr   = _load_font(True, 18)
-    fnt_row   = _load_font(True, 24)
-    fnt_small = _load_font(False, 16)
+    fnt_title = _load_font(True, 50)      # was 40
+    fnt_hdr   = _load_font(True, 22)      # was 18
+    fnt_row   = _load_font(True, 30)      # was 24
+    fnt_small = _load_font(False, 20)     # was 16
 
-    draw.text((W // 2, 26), "RVRU OVERALL STANDINGS", fill=CYAN, font=fnt_title, anchor="mt")
-    draw.text((W // 2, 84), "13 stock tracks · summed best time · lower is better",
+    draw.text((W // 2, 30), "RVRU OVERALL STANDINGS", fill=CYAN, font=fnt_title, anchor="mt")
+    draw.text((W // 2, 100), "13 stock tracks · summed best time · lower is better",
               fill=GRAY, font=fnt_small, anchor="mt")
 
-    COL_POS, COL_NAME = PAD, PAD + 60
-    COL_TRACKS, COL_TITLE, COL_SCORE = W - PAD, W - PAD - 103, W - PAD - 280
-    # gaps above sized from real measured widths: Unranked=110px, 655.393=90px,
-    # plus room for a ~30px tier icon between the score and title columns
+    COL_POS, COL_NAME = PAD, PAD + 70
+    COL_TRACKS  = W - PAD
+    COL_TITLE   = COL_TRACKS - 130
+    COL_SCORE   = COL_TITLE - 240
+    # gaps re-measured at the bigger font: Unranked=138px, 655.393=111px, plus
+    # room for a ~38px tier icon between the score and title columns
 
-    hdr_y = 122
+    hdr_y = 152
     draw.text((COL_POS,   hdr_y), "#",      fill=CYAN, font=fnt_hdr)
     draw.text((COL_NAME,  hdr_y), "DRIVER", fill=CYAN, font=fnt_hdr)
     draw.text((COL_SCORE, hdr_y), "SCORE",  fill=CYAN, font=fnt_hdr, anchor="ra")
     draw.text((COL_TITLE, hdr_y), "TITLE",  fill=CYAN, font=fnt_hdr, anchor="ra")
     draw.text((COL_TRACKS,hdr_y), "TRACKS", fill=CYAN, font=fnt_hdr, anchor="ra")
-    draw.line([(PAD, HEADER_H - 8), (W - PAD, HEADER_H - 8)], fill=DIV, width=1)
+    draw.line([(PAD, HEADER_H - 10), (W - PAD, HEADER_H - 10)], fill=DIV, width=1)
 
     for idx, row in enumerate(rows):
         y = HEADER_H + idx * ROW_H
@@ -1239,12 +1241,12 @@ def generate_standings_image(rows: list[dict], icons: dict | None = None) -> io.
         draw.text((COL_SCORE, mid), scoring.format_score(row["score_ms"]),
                   fill=color, font=fnt_row, anchor="rm")
         draw.text((COL_TITLE, mid), tier, fill=color, font=fnt_row, anchor="rm")
-        _paste_icon_before(img, icons.get(tier), tier, fnt_row, COL_TITLE, mid)
+        _paste_icon_before(img, icons.get(tier), tier, fnt_row, COL_TITLE, mid, size=38)
         draw.text((COL_TRACKS, mid), f"{row['coverage']}/{row['total_tracks']}",
                   fill=GRAY, font=fnt_small, anchor="rm")
 
-    draw.line([(PAD, H - FOOTER_H + 6), (W - PAD, H - FOOTER_H + 6)], fill=DIV, width=1)
-    draw.text((W // 2, H - FOOTER_H + 12), "Title is earned from points per track - no need to race all 13",
+    draw.line([(PAD, H - FOOTER_H + 8), (W - PAD, H - FOOTER_H + 8)], fill=DIV, width=1)
+    draw.text((W // 2, H - FOOTER_H + 14), "Title is earned from points per track - no need to race all 13",
               fill=GRAY, font=fnt_small, anchor="mt")
 
     buf = io.BytesIO()
@@ -1258,7 +1260,7 @@ def generate_card_image(name: str, result: dict, best_times: dict,
     """One player's time and title on every one of the 13 tracks."""
     icons = icons or {}
     W, PAD = 700, 36
-    ROW_H, HEADER_H, FOOTER_H = 42, 168, 26
+    ROW_H, HEADER_H, FOOTER_H = 53, 215, 33     # +~25% over the original sizing
     tracks = scoring.CANONICAL_TRACK_KEYS
     H = HEADER_H + len(tracks) * ROW_H + FOOTER_H
 
@@ -1284,55 +1286,56 @@ def generate_card_image(name: str, result: dict, best_times: dict,
                                     (icons or {}).get(result["overall_tier"]))
     draw = ImageDraw.Draw(img)
 
-    fnt_title = _load_font(True, 32)
-    fnt_sub   = _load_font(True, 18)     # was unbolded 17 - read as faint next to the name
-    fnt_hdr   = _load_font(True, 15)
-    fnt_row   = _load_font(True, 19)
-    fnt_tier  = _load_font(True, 19)     # was 15 and unbolded - too small to "pop"
-    fnt_small = _load_font(False, 15)
+    fnt_title    = _load_font(True, 40)      # was 32
+    fnt_rank_big = _load_font(True, 36)      # the "Rank: X" line - its own big line now,
+                                             # not sharing a row with the score/coverage detail
+    fnt_detail   = _load_font(True, 19)      # the smaller "(N pts) · Score · tracks" line
+    fnt_hdr      = _load_font(True, 19)      # was 15
+    fnt_row      = _load_font(True, 24)      # was 19
+    fnt_tier     = _load_font(True, 24)      # was 19
+    fnt_small    = _load_font(False, 19)     # was 15
 
     overall = result["overall_tier"]
     # Unranked has no tier color of its own; TIER_COLOR.get's fallback used to
     # be a dim gray that all but disappeared against the near-black background.
     overall_color = scoring.TIER_COLOR.get(overall, scoring.UNRANKED_COLOR)
-    draw.text((W // 2, 18), name, fill=WHITE, font=fnt_title, anchor="mt")
+    draw.text((W // 2, 14), name, fill=WHITE, font=fnt_title, anchor="mt")
 
-    # The subtitle is centered as one line, but the rank icon is a pasted
-    # image, not text - measure each piece to find where the line as a whole
-    # should start, rather than centering the text alone and bolting an icon
-    # onto a fixed offset that would drift for every different tier word.
-    sub_y   = 74
+    # "Rank: <icon> <Tier>" is now its own big, standalone line - centered as
+    # one unit even though the icon is a pasted image, not text, so its width
+    # has to be measured and folded into the centering math like the rest.
+    rank_y  = 66
     prefix  = "Rank: "
-    suffix  = (f" ({result['overall_points']} pts)  ·  "
-              f"Score {scoring.format_score(result['score_ms'])}"
-              f"  ·  {result['coverage']}/{result['total_tracks']} tracks")
     icon    = icons.get(overall)
-    ICON_H  = 26          # was 20 - too small next to the name above it
-    prefix_w = draw.textlength(prefix, font=fnt_sub)
-    tier_w   = draw.textlength(overall, font=fnt_sub)
-    suffix_w = draw.textlength(suffix, font=fnt_sub)
-    icon_span = (ICON_H + 6) if icon else 0
-    x = (W - (prefix_w + icon_span + tier_w + suffix_w)) / 2
+    ICON_H  = 42
+    prefix_w  = draw.textlength(prefix, font=fnt_rank_big)
+    tier_w    = draw.textlength(overall, font=fnt_rank_big)
+    icon_span = (ICON_H + 8) if icon else 0
+    x = (W - (prefix_w + icon_span + tier_w)) / 2
 
-    draw.text((x, sub_y), prefix, fill=overall_color, font=fnt_sub, anchor="la")
+    draw.text((x, rank_y), prefix, fill=overall_color, font=fnt_rank_big, anchor="la")
     x += prefix_w
     if icon:
-        _paste_icon_at(img, icon, int(x), int(sub_y + 9), size=ICON_H)
-        x += ICON_H + 6
-    draw.text((x, sub_y), overall, fill=overall_color, font=fnt_sub, anchor="la")
-    x += tier_w
-    draw.text((x, sub_y), suffix, fill=overall_color, font=fnt_sub, anchor="la")
+        _paste_icon_at(img, icon, int(x), int(rank_y + 22), size=ICON_H)
+        x += ICON_H + 8
+    draw.text((x, rank_y), overall, fill=overall_color, font=fnt_rank_big, anchor="la")
 
-    COL_TRACK, COL_TIME = PAD, W - PAD - 150
-    COL_RANK = W - PAD - 128     # left edge of the rank column, icon then text
-    RANK_ICON_SLOT = 26          # reserved whether or not this row has an icon,
+    # Smaller supporting line underneath: points, score, coverage
+    detail = (f"{result['overall_points']} pts  ·  "
+             f"Score {scoring.format_score(result['score_ms'])}"
+             f"  ·  {result['coverage']}/{result['total_tracks']} tracks")
+    draw.text((W // 2, 122), detail, fill=overall_color, font=fnt_detail, anchor="mt")
+
+    COL_TRACK, COL_TIME = PAD, W - PAD - 180
+    COL_RANK = W - PAD - 150     # left edge of the rank column, icon then text
+    RANK_ICON_SLOT = 33          # reserved whether or not this row has an icon,
                                  # so every row's text starts at the same x
 
-    hdr_y = 122
+    hdr_y = 168
     draw.text((COL_TRACK, hdr_y), "TRACK", fill=HDR_COLOR, font=fnt_hdr)
     draw.text((COL_TIME,  hdr_y), "TIME",  fill=HDR_COLOR, font=fnt_hdr, anchor="ra")
     draw.text((COL_RANK,  hdr_y), "RANK",  fill=HDR_COLOR, font=fnt_hdr)
-    draw.line([(PAD, HEADER_H - 8), (W - PAD, HEADER_H - 8)], fill=DIV, width=1)
+    draw.line([(PAD, HEADER_H - 10), (W - PAD, HEADER_H - 10)], fill=DIV, width=1)
 
     # A dark, muted version of the player's own rank color, not a fixed navy -
     # keeps the same hue as the border/glow instead of a color unrelated to it.
