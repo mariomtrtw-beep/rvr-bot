@@ -14,6 +14,7 @@ from rvgl_results import name_key, REQUIRED_LAPS
 from coordinator_ingest import (ALLOW_PICKUPS, apply_rules as apply_race_rules,
                                 fetch_session, ms_to_time, races_from)
 from coordinator_probe import read_frames, sessions_from
+import rvr_scoring as scoring
 
 # ── Config ────────────────────────────────────────────────────────────────────
 TOKEN     = os.environ["DISCORD_TOKEN"]
@@ -31,6 +32,7 @@ skips_col    = db["link_skips"]   # names deliberately left unlinked
 races_col    = db["races"]        # every race ingested, one doc per GameID
 boards_col   = db["track_boards"] # the posted message we edit per track
 state_col    = db["bot_state"]    # small key/value bits, e.g. the armed session
+driver_stats_col = db["driver_stats"]   # cached overall score/title per discord user
 
 GATHER_CHANNEL   = "Gather"
 DEV_CHANNEL      = "development"
@@ -122,6 +124,7 @@ async def on_ready():
     # One race is ingested once, however many times we re-read the session
     await races_col.create_index("game_id", unique=True)
     await boards_col.create_index("track", unique=True)
+    await driver_stats_col.create_index("uid", unique=True)
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
@@ -901,7 +904,7 @@ async def links_cmd(ctx):
 
 
 # ── Channels ──────────────────────────────────────────────────────────────────
-CHANNEL_ROLES = ("leaderboard", "activity", "commands")
+CHANNEL_ROLES = ("leaderboard", "times", "activity", "commands")
 
 
 async def channel_ids() -> dict:
@@ -928,7 +931,7 @@ async def setchannel_cmd(ctx, role: str = "", channel: discord.TextChannel = Non
     """!setchannel leaderboard #leaderboard"""
     role = role.lower().strip()
     if role not in CHANNEL_ROLES:
-        await ctx.send("❌ Usage: `!setchannel <leaderboard|activity|commands> #channel`")
+        await ctx.send(f"❌ Usage: `!setchannel <{'|'.join(CHANNEL_ROLES)}> #channel`")
         return
     channel = channel or ctx.channel
     ids = await channel_ids()
@@ -1001,6 +1004,258 @@ async def link_map() -> dict:
         out[a["name_key"]] = a["uid"]
     return out
 
+
+# ── Overall standings (13-track score and title) ────────────────────────────
+def generate_standings_image(rows: list[dict]) -> io.BytesIO:
+    """rows: sorted ascending by score_ms, each with name/score_ms/overall_tier/coverage."""
+    W, PAD = 900, 40
+    ROW_H, HEADER_H, FOOTER_H = 54, 110, 30
+    H = HEADER_H + len(rows) * ROW_H + FOOTER_H
+
+    BG_TOP, BG_BOT = (2, 8, 22), (5, 3, 26)
+    WHITE, GRAY, DIV, CYAN = (255, 255, 255), (140, 150, 170), (28, 48, 78), (0, 200, 255)
+
+    img = Image.new("RGB", (W, H), BG_TOP)
+    draw = ImageDraw.Draw(img)
+    for y in range(H):
+        t = y / H
+        c = tuple(int(BG_TOP[i] + t * (BG_BOT[i] - BG_TOP[i])) for i in range(3))
+        draw.line([(0, y), (W - 1, y)], fill=c)
+
+    fnt_title = _load_font(True, 40)
+    fnt_hdr   = _load_font(True, 20)
+    fnt_row   = _load_font(True, 24)
+    fnt_small = _load_font(False, 17)
+
+    draw.text((W // 2, 30), "RVRU OVERALL STANDINGS", fill=CYAN, font=fnt_title, anchor="mt")
+    draw.text((W // 2, 78), "13 stock tracks · summed best time · lower is better",
+              fill=GRAY, font=fnt_small, anchor="mt")
+    draw.line([(PAD, HEADER_H - 6), (W - PAD, HEADER_H - 6)], fill=DIV, width=1)
+
+    COL_POS, COL_NAME, COL_SCORE, COL_TITLE, COL_COV = PAD, PAD + 60, W - PAD - 260, W - PAD - 130, W - PAD
+
+    draw.text((COL_POS, HEADER_H - 26), "#", fill=CYAN, font=fnt_hdr)
+    draw.text((COL_NAME, HEADER_H - 26), "DRIVER", fill=CYAN, font=fnt_hdr)
+    draw.text((COL_SCORE, HEADER_H - 26), "SCORE", fill=CYAN, font=fnt_hdr, anchor="rt")
+    draw.text((COL_COV, HEADER_H - 26), "TRACKS", fill=CYAN, font=fnt_hdr, anchor="rt")
+
+    for idx, row in enumerate(rows):
+        y = HEADER_H + idx * ROW_H
+        mid = y + ROW_H // 2
+        if idx % 2 == 1:
+            draw.rectangle([(PAD, y), (W - PAD, y + ROW_H)], fill=(10, 18, 38))
+        tier = row["overall_tier"]
+        color = scoring.TIER_COLOR.get(tier, scoring.UNRANKED_COLOR)
+
+        draw.text((COL_POS, mid), f"#{idx + 1}", fill=GRAY, font=fnt_row, anchor="lm")
+        draw.text((COL_NAME, mid), row["name"], fill=WHITE, font=fnt_row, anchor="lm")
+        draw.text((COL_SCORE, mid), scoring.format_score(row["score_ms"]),
+                  fill=color, font=fnt_row, anchor="rm")
+        draw.text((COL_TITLE, mid), tier, fill=color, font=fnt_row, anchor="lm")
+        draw.text((COL_COV, mid), f"{row['coverage']}/{row['total_tracks']}",
+                  fill=GRAY, font=fnt_small, anchor="rm")
+
+    draw.line([(PAD, H - FOOTER_H + 4), (W - PAD, H - FOOTER_H + 4)], fill=DIV, width=1)
+    draw.text((W // 2, H - FOOTER_H + 8), "Unranked until every track has a time",
+              fill=GRAY, font=fnt_small, anchor="mt")
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
+
+
+def generate_card_image(name: str, result: dict, best_times: dict) -> io.BytesIO:
+    """One player's time and title on every one of the 13 tracks."""
+    W, PAD = 700, 36
+    ROW_H, HEADER_H, FOOTER_H = 40, 130, 26
+    tracks = scoring.CANONICAL_TRACK_KEYS
+    H = HEADER_H + len(tracks) * ROW_H + FOOTER_H
+
+    BG_TOP, BG_BOT = (2, 8, 22), (5, 3, 26)
+    WHITE, GRAY, DIV, CYAN = (255, 255, 255), (140, 150, 170), (28, 48, 78), (0, 200, 255)
+
+    img = Image.new("RGB", (W, H), BG_TOP)
+    draw = ImageDraw.Draw(img)
+    for y in range(H):
+        t = y / H
+        c = tuple(int(BG_TOP[i] + t * (BG_BOT[i] - BG_TOP[i])) for i in range(3))
+        draw.line([(0, y), (W - 1, y)], fill=c)
+
+    fnt_title = _load_font(True, 32)
+    fnt_sub   = _load_font(False, 17)
+    fnt_row   = _load_font(True, 19)
+    fnt_small = _load_font(False, 15)
+
+    overall = result["overall_tier"]
+    overall_color = scoring.TIER_COLOR.get(overall, scoring.UNRANKED_COLOR)
+    draw.text((W // 2, 20), name, fill=WHITE, font=fnt_title, anchor="mt")
+    draw.text((W // 2, 60), f"Overall: {overall}  ·  Score {scoring.format_score(result['score_ms'])}"
+              f"  ·  {result['coverage']}/{result['total_tracks']} tracks",
+              fill=overall_color, font=fnt_sub, anchor="mt")
+    draw.line([(PAD, HEADER_H - 6), (W - PAD, HEADER_H - 6)], fill=DIV, width=1)
+
+    COL_TRACK, COL_TIME, COL_TIER = PAD, W - PAD - 140, W - PAD
+
+    for idx, key in enumerate(tracks):
+        y = HEADER_H + idx * ROW_H
+        mid = y + ROW_H // 2
+        if idx % 2 == 1:
+            draw.rectangle([(PAD, y), (W - PAD, y + ROW_H)], fill=(10, 18, 38))
+
+        tier = result["per_track_tier"].get(key)
+        color = scoring.TIER_COLOR.get(tier, GRAY)
+        time_txt = scoring.ms_to_time(best_times[key]) if key in best_times else "— not set —"
+        tier_txt = tier or "—"
+
+        draw.text((COL_TRACK, mid), scoring.TRACK_DISPLAY[key], fill=WHITE, font=fnt_row, anchor="lm")
+        draw.text((COL_TIME, mid), time_txt, fill=(GRAY if key not in best_times else color),
+                  font=fnt_row, anchor="rm")
+        draw.text((COL_TIER, mid), tier_txt, fill=color, font=fnt_small, anchor="rm")
+
+    draw.line([(PAD, H - FOOTER_H + 2), (W - PAD, H - FOOTER_H + 2)], fill=DIV, width=1)
+    draw.text((W // 2, H - FOOTER_H + 4), "Overall title = your weakest track",
+              fill=GRAY, font=fnt_small, anchor="mt")
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
+
+
+async def compute_all_driver_stats(guild) -> list[dict]:
+    """Best time per canonical track per discord user, scored.
+
+    A user's times are pooled across every in-game name linked to them, so
+    switching names mid-season does not split their results in two.
+    """
+    links = await link_map()
+    best: dict[int, dict[str, int]] = {}
+    async for doc in races_col.find({"counted": True}, {"track": 1, "entries": 1}):
+        if not scoring.is_canonical_track(doc["track"]):
+            continue
+        tkey = scoring.track_key(doc["track"])
+        for e in doc["entries"]:
+            if not e.get("counted"):
+                continue
+            uid = links.get(e["name_key"])
+            if uid is None:
+                continue                      # held until linked, same as everywhere else
+            slot = best.setdefault(uid, {})
+            if tkey not in slot or e["time_ms"] < slot[tkey]:
+                slot[tkey] = e["time_ms"]
+
+    out = []
+    for uid, times in best.items():
+        member = guild.get_member(uid)
+        name = member.display_name if member else f"user {uid}"
+        out.append({"uid": uid, "name": name, "best_times": times,
+                    **scoring.score_driver(times)})
+    out.sort(key=lambda r: r["score_ms"])
+    return out
+
+
+async def recompute_standings(guild) -> list[str]:
+    """Recompute every driver's score/title, update the board, return activity events.
+
+    Tier-up events only fire against a driver we already had a previous
+    snapshot for - otherwise the very first run after this feature ships would
+    announce a "promotion" for every single existing time.
+    """
+    rows = await compute_all_driver_stats(guild)
+    if not rows:
+        return []
+
+    events = []
+    now = datetime.now(timezone.utc)
+    for row in rows:
+        prev = await driver_stats_col.find_one({"uid": row["uid"]})
+        if prev:
+            for tkey, new_tier in row["per_track_tier"].items():
+                old_tier = (prev.get("per_track_tier") or {}).get(tkey)
+                if scoring.TIER_RANK.get(new_tier, 0) > scoring.TIER_RANK.get(old_tier, 0):
+                    events.append(f"{scoring.TIER_EMOJI[new_tier]} <@{row['uid']}> reached "
+                                 f"**{new_tier}** on **{scoring.TRACK_DISPLAY[tkey]}**")
+            old_overall = prev.get("overall_tier")
+            new_overall = row["overall_tier"]
+            if (new_overall != scoring.UNRANKED
+                    and scoring.TIER_RANK.get(new_overall, 0) >
+                        scoring.TIER_RANK.get(None if old_overall == scoring.UNRANKED else old_overall, 0)):
+                events.append(f"{scoring.TIER_EMOJI[new_overall]} <@{row['uid']}> is now "
+                             f"**{new_overall}** overall!")
+
+        await driver_stats_col.update_one(
+            {"uid": row["uid"]},
+            {"$set": {"uid": row["uid"], "name": row["name"], "score_ms": row["score_ms"],
+                      "coverage": row["coverage"], "overall_tier": row["overall_tier"],
+                      "per_track_tier": row["per_track_tier"], "best_times": row["best_times"],
+                      "updated_at": now}},
+            upsert=True)
+
+    await refresh_standings_board(guild, rows)
+    return events
+
+
+async def refresh_standings_board(guild, rows: list[dict]) -> None:
+    """Edit the one standings message in place, only when it actually changed."""
+    channel = await get_channel(guild, "leaderboard")
+    if not channel:
+        return
+
+    fingerprint = "|".join(f"{r['uid']}:{r['score_ms']}:{r['overall_tier']}" for r in rows)
+    doc = await state_col.find_one({"key": "standings_board"})
+    if doc and doc.get("fingerprint") == fingerprint:
+        return
+
+    buf = generate_standings_image(rows)
+    if doc and doc.get("channel_id") == channel.id:
+        try:
+            message = await channel.fetch_message(doc["message_id"])
+            await message.edit(attachments=[discord.File(buf, filename="standings.png")])
+            await state_col.update_one({"key": "standings_board"},
+                                       {"$set": {"fingerprint": fingerprint}})
+            return
+        except (discord.NotFound, discord.Forbidden):
+            pass                              # deleted or inaccessible - repost fresh
+
+    message = await channel.send(file=discord.File(buf, filename="standings.png"))
+    await state_col.update_one(
+        {"key": "standings_board"},
+        {"$set": {"key": "standings_board", "channel_id": channel.id,
+                  "message_id": message.id, "fingerprint": fingerprint}},
+        upsert=True)
+
+
+@bot.command(name="standings")
+async def standings_cmd(ctx):
+    """Recompute and repost the overall standings image."""
+    async with ctx.typing():
+        events = await recompute_standings(ctx.guild)
+    if not await get_channel(ctx.guild, "leaderboard"):
+        await ctx.send("❌ No leaderboard channel set — `!setchannel leaderboard #channel`.")
+        return
+    for event in events:
+        await announce(ctx.guild, event)
+    await ctx.send("✅ Standings updated.")
+
+
+@bot.command(name="card")
+async def card_cmd(ctx, member: discord.Member = None):
+    """Show a player's time and title on every track: !card [@player]"""
+    member = member or ctx.author
+    doc = await driver_stats_col.find_one({"uid": member.id})
+    if not doc:
+        await ctx.send(f"❓ No scored times for {member.mention} yet — "
+                       f"race a session, get linked, then `!fetch` or `!standings`.")
+        return
+
+    result = {"score_ms": doc["score_ms"], "coverage": doc["coverage"],
+             "total_tracks": len(scoring.CANONICAL_TRACK_KEYS),
+             "overall_tier": doc["overall_tier"], "per_track_tier": doc["per_track_tier"]}
+    buf = generate_card_image(doc["name"], result, doc["best_times"])
+    await ctx.send(file=discord.File(buf, filename="card.png"))
+
+
 def actually_raced(entry) -> bool:
     """Did this person take part, or were they just sitting in the lobby?
 
@@ -1050,7 +1305,7 @@ async def best_per_track(track: str) -> tuple[list, dict, dict]:
 def board_embed(track: str, ranked: list) -> discord.Embed:
     """The leaderboard block: the ranking and nothing else.
 
-    Held and excluded results are reported where !ingest was run, not here - the
+    Held and excluded results are reported where !fetch was run, not here - the
     leaderboard channel stays readable and free of bookkeeping.
     """
     lines = []
@@ -1262,7 +1517,6 @@ async def active_session_id() -> str | None:
 
 
 @bot.command(name="b3l")
-@admin_or_dev()
 async def b3l_cmd(ctx, session_ref: str = ""):
     """Arm a session: !b3l to find a public one, or !b3l <id> for a private one.
 
@@ -1364,8 +1618,8 @@ async def b3l_cmd(ctx, session_ref: str = ""):
                               + ("  ·  *private, armed by id*" if private else ""),
                         inline=False)
     embed.set_footer(
-        text=("already armed — !ingest when you are done" if already
-              else "run !ingest before closing the lobby — results vanish with it"))
+        text=("already armed — !fetch when you are done" if already
+              else "run !fetch before closing the lobby — results vanish with it"))
     await ctx.send(embed=embed)
 
     if already:
@@ -1388,26 +1642,31 @@ async def b3l_cmd(ctx, session_ref: str = ""):
 async def refresh_cmd(ctx):
     """Forget where the boards were posted and put them up fresh.
 
-    Needed after moving the leaderboard channel - the old messages stay where
-    they are and should be deleted by hand.
+    Needed after moving the times channel, or after linking someone whose
+    results were being held - also recomputes the overall standings.
     """
-    board_ch = await get_channel(ctx.guild, "leaderboard") or ctx.channel
+    board_ch = await get_channel(ctx.guild, "times") or ctx.channel
     await boards_col.update_many({}, {"$unset": {"message_id": "", "channel_id": "",
                                                  "fingerprint": ""}})
     tracks = await races_col.distinct("track", {"counted": True})
-    if not tracks:
-        await ctx.send("Nothing stored yet.")
-        return
+    if tracks:
+        async with ctx.typing():
+            lines, _ = await refresh_boards(board_ch, sorted(tracks))
+        await ctx.send(f"🔁 Rebuilt {len(lines)} board(s) in {board_ch.mention}. "
+                       f"Delete the old messages by hand.")
+    else:
+        await ctx.send("No track results stored yet.")
+
     async with ctx.typing():
-        lines, _ = await refresh_boards(board_ch, sorted(tracks))
-    await ctx.send(f"🔁 Rebuilt {len(lines)} board(s) in {board_ch.mention}. "
-                   f"Delete the old messages by hand.")
+        events = await recompute_standings(ctx.guild)
+    for event in events:
+        await announce(ctx.guild, event)
+    await nudge_unlinked(ctx)
 
 
-@bot.command(name="ingest")
-@admin_or_dev()
-async def ingest_cmd(ctx, session_ref: str = ""):
-    """Pull a coordinator session's races in: !ingest [id or url]"""
+@bot.command(name="fetch")
+async def fetch_cmd(ctx, session_ref: str = ""):
+    """Pull a coordinator session's races in: !fetch [id or url]"""
     if session_ref:
         match = SESSION_ID_RE.search(session_ref)
         if not match:
@@ -1417,7 +1676,7 @@ async def ingest_cmd(ctx, session_ref: str = ""):
     else:
         session_id = await active_session_id()
         if not session_id:
-            await ctx.send("❌ No session armed — run `!b3l` first, or `!ingest <id>`.")
+            await ctx.send("❌ No session armed — run `!b3l` first, or `!fetch <id>`.")
             return
 
     async with ctx.typing():
@@ -1488,70 +1747,29 @@ async def ingest_cmd(ctx, session_ref: str = ""):
             raced_by_track.setdefault(r.track, set()).update(
                 e.name_key for e in r.entries if e.counted)
 
-    board_ch = await get_channel(ctx.guild, "leaderboard") or ctx.channel
+    board_ch = await get_channel(ctx.guild, "times") or ctx.channel
     async with ctx.typing():
         lines, events = await refresh_boards(board_ch, sorted(raced_by_track),
                                              raced_by_track)
     if lines:
         await ctx.send("\n".join(lines))
-    if board_ch is ctx.channel and not await get_channel(ctx.guild, "leaderboard"):
-        await ctx.send("*(no leaderboard channel set — boards are here. "
-                       "`!setchannel leaderboard #channel` to move them.)*")
+    if board_ch is ctx.channel and not await get_channel(ctx.guild, "times"):
+        await ctx.send("*(no times channel set — track boards are here. "
+                       "`!setchannel times #channel` to move them.)*")
 
-    # Records and podium moves are news. Import counts are bookkeeping and stay
-    # in the command channel - !endsession posts the wrap-up when it is over.
+    # Records and podium moves are news, straight to the activity feed.
+    # Import counts are bookkeeping and stay in the command channel.
     for event in events:
         await announce(ctx.guild, event)
-    await nudge_unlinked(ctx)
 
-
-@bot.command(name="endsession")
-@admin_or_dev()
-async def endsession_cmd(ctx):
-    """Post the session wrap-up to the activity feed and disarm it."""
-    doc = await state_col.find_one({"key": "active_session"})
-    if not doc or not doc.get("session_id"):
-        await ctx.send("❌ No session armed — `!b3l` arms one.")
-        return
-
-    races = await races_col.find({"session_id": doc["session_id"]}).to_list(None)
-    counted = [r for r in races if r.get("counted")]
-    if not counted:
-        await ctx.send("Nothing was ingested for that session.")
-        return
-
-    links = await link_map()
-    racers, tracks = {}, set()
-    for race in counted:
-        tracks.add(race["track"])
-        for e in race["entries"]:
-            if e.get("counted"):
-                racers[e["name_key"]] = e["name_raw"]
-
-    named = ", ".join(f"<@{links[k]}>" if k in links else f"**{v}**"
-                      for k, v in sorted(racers.items(), key=lambda kv: kv[1].lower()))
-    await announce(ctx.guild,
-                   f"🏁 **{doc.get('name', 'RVRU')}** finished — "
-                   f"{len(counted)} race(s) across {len(tracks)} track(s)\n{named}")
-    await state_col.update_one({"key": "active_session"},
-                               {"$unset": {"session_id": "", "name": ""}})
-    await ctx.send(f"✅ Wrapped up **{doc.get('name', '?')}** — "
-                   f"{len(counted)} race(s), {len(tracks)} track(s), {len(racers)} racer(s).")
-
-
-@bot.command(name="repost")
-@admin_or_dev()
-async def repost_cmd(ctx):
-    """Refresh every track block — use after linking people."""
-    tracks = await races_col.distinct("track", {"counted": True})
-    if not tracks:
-        await ctx.send("Nothing stored yet — run `!b3l` then `!ingest` during a session.")
-        return
-    board_ch = await get_channel(ctx.guild, "leaderboard") or ctx.channel
     async with ctx.typing():
-        lines, _events = await refresh_boards(board_ch, sorted(tracks))
-    await ctx.send("\n".join(lines))
+        standings_events = await recompute_standings(ctx.guild)
+    for event in standings_events:
+        await announce(ctx.guild, event)
+
     await nudge_unlinked(ctx)
+
+
 
 
 async def nudge_unlinked(ctx) -> None:
@@ -1567,7 +1785,7 @@ async def nudge_unlinked(ctx) -> None:
         return
     names = ", ".join(f"`{n}`" for n in sorted(waiting.values(), key=str.lower))
     await ctx.send(f"⏳ **{len(waiting)} racer(s) have times but no Discord account yet:** "
-                   f"{names}\nLink them with `!link <name> <user id>`, then `!repost`.")
+                   f"{names}\nLink them with `!link <name> <user id>`, then `!refresh`.")
 
 @bot.command(name="unlinked")
 @admin_or_dev()
@@ -1598,7 +1816,7 @@ async def unlinked_cmd(ctx):
         title=f"⏳ Unlinked racers ({len(waiting)})",
         description="\n".join(lines[:25])[:2000],
         color=0xffcc00)
-    embed.set_footer(text="!link <ingame name> <user id>  ·  then !repost <session id>")
+    embed.set_footer(text="!link <ingame name> <user id>  ·  then !refresh")
     await ctx.send(embed=embed)
 
 
@@ -1617,7 +1835,7 @@ async def racers_cmd(ctx):
             row = seen.setdefault(entry["name_key"], {"raw": entry["name_raw"], "races": 0})
             row["races"] += 1
     if not seen:
-        await ctx.send("No results stored yet — run `!ingest <session id>` while a "
+        await ctx.send("No results stored yet — run `!fetch <session id>` while a "
                        "session is live.")
         return
 
@@ -2068,15 +2286,15 @@ async def set_votes(ctx):
 @bot.command(name="rvrhelp")
 async def rvr_help(ctx):
     embed = discord.Embed(title="🤖 RVR Bot Commands", color=discord.Color.blurple())
+    embed.add_field(name="!b3l [session id]",     value="Find (or arm by id) the live RVRU session and check its settings", inline=False)
+    embed.add_field(name="!fetch [session id]",   value="Pull the armed session's races in - updates #times and the overall standings", inline=False)
+    embed.add_field(name="!standings",            value="Recompute and repost the overall standings image", inline=False)
+    embed.add_field(name="!card [@player]",       value="Show a player's time and title on every track (defaults to you)", inline=False)
     embed.add_field(name="!whois <ingame name>",  value="Show which Discord user an in-game name belongs to", inline=False)
     embed.add_field(name="── Admin only ──",      value="\u200b", inline=False)
-    embed.add_field(name="!setchannel <role> #chan",     value="Set the leaderboard / activity / commands channel", inline=False)
+    embed.add_field(name="!setchannel <role> #chan", value="Set the leaderboard / times / activity / commands channel", inline=False)
     embed.add_field(name="!channels",                    value="Show which channel is used for what", inline=False)
-    embed.add_field(name="!refresh",                      value="Post every track board again in the leaderboard channel", inline=False)
-    embed.add_field(name="!b3l",                         value="Arm the live session. Add the id for a private lobby: !b3l <id>", inline=False)
-    embed.add_field(name="!ingest [session id]",     value="Pull the armed session's races in and update the boards", inline=False)
-    embed.add_field(name="!repost <session id>",         value="Post a session's results again, after linking people", inline=False)
-    embed.add_field(name="!endsession",                  value="Post the session wrap-up to the activity feed and disarm it", inline=False)
+    embed.add_field(name="!refresh", value="Post every track board and the standings again", inline=False)
     embed.add_field(name="!unlinked",                    value="Racers with held results and no Discord user yet", inline=False)
     embed.add_field(name="!link <ingame name> @user",    value="Link an in-game name to a Discord user so results score to them", inline=False)
     embed.add_field(name="!linksuggest",                 value="Show which in-game names auto-match a Discord member (no changes)", inline=False)
