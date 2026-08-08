@@ -1183,14 +1183,14 @@ async def recompute_standings(guild) -> list[str]:
             for tkey, new_tier in row["per_track_tier"].items():
                 old_tier = (prev.get("per_track_tier") or {}).get(tkey)
                 if scoring.TIER_RANK.get(new_tier, 0) > scoring.TIER_RANK.get(old_tier, 0):
-                    events.append(f"{scoring.TIER_EMOJI[new_tier]} <@{row['uid']}> reached "
+                    events.append(f"{tier_display(guild, new_tier)} <@{row['uid']}> reached "
                                  f"**{new_tier}** on **{scoring.TRACK_DISPLAY[tkey]}**")
             old_overall = prev.get("overall_tier")
             new_overall = row["overall_tier"]
             if (new_overall != scoring.UNRANKED
                     and scoring.TIER_RANK.get(new_overall, 0) >
                         scoring.TIER_RANK.get(None if old_overall == scoring.UNRANKED else old_overall, 0)):
-                events.append(f"{scoring.TIER_EMOJI[new_overall]} <@{row['uid']}> is now "
+                events.append(f"{tier_display(guild, new_overall)} <@{row['uid']}> is now "
                              f"**{new_overall}** overall!")
 
         await driver_stats_col.update_one(
@@ -1311,7 +1311,20 @@ async def best_per_track(track: str) -> tuple[list, dict, dict]:
     return [(links[b["name_key"]], b) for b in ranked], waiting, excluded
 
 
-def board_embed(track: str, ranked: list) -> discord.Embed:
+def tier_display(guild, tier: str) -> str:
+    """Custom :tier_<name>: emoji if the server has uploaded one, else the
+    built-in unicode fallback - so this works before anyone uploads anything.
+
+    Name the emojis exactly tier_street, tier_hustler, tier_elite, tier_legend.
+    """
+    if guild:
+        custom = discord.utils.get(guild.emojis, name=f"tier_{tier.lower()}")
+        if custom:
+            return str(custom)
+    return scoring.TIER_EMOJI[tier]
+
+
+def board_embed(track: str, ranked: list, guild=None) -> discord.Embed:
     """The leaderboard block: the ranking and nothing else.
 
     Held and excluded results are reported where !fetch was run, not here - the
@@ -1333,7 +1346,7 @@ def board_embed(track: str, ranked: list) -> discord.Embed:
         if canonical:
             tier = scoring.tier_for_time(b["time_ms"], track)
             if tier:
-                tier_txt = f"  ·  {scoring.TIER_EMOJI[tier]} {tier}"
+                tier_txt = f"  ·  {tier_display(guild, tier)} {tier}"
         # Deliberately no run count: it would change the board on every race,
         # and this should only move when a time actually improves.
         lines.append(f"{position} <@{uid}> — `{ms_to_time(b['time_ms'])}`"
@@ -1413,7 +1426,7 @@ async def refresh_board(channel, track: str, raced: set | None = None,
     if not ranked and not waiting:
         return f"⚠️ **{track}** — nothing counted ({await why_nothing(track)})"
 
-    embed       = board_embed(track, ranked)
+    embed       = board_embed(track, ranked, guild=channel.guild)
     fingerprint = embed.description
     board       = await boards_col.find_one({"track": track})
     old_bests   = (board or {}).get("bests", {})
