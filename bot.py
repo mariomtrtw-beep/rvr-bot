@@ -1196,6 +1196,7 @@ def generate_standings_image(rows: list[dict], icons: dict | None = None) -> io.
 
     BG_TOP, BG_BOT = (2, 8, 22), (5, 3, 26)
     WHITE, GRAY, DIV, CYAN = (255, 255, 255), (140, 150, 170), (28, 48, 78), (0, 200, 255)
+    PODIUM_COLORS = {0: (255, 215, 0), 1: (200, 205, 215), 2: (205, 127, 50)}  # gold/silver/bronze
 
     img = Image.new("RGB", (W, H), BG_TOP)
     draw = ImageDraw.Draw(img)
@@ -1203,6 +1204,21 @@ def generate_standings_image(rows: list[dict], icons: dict | None = None) -> io.
         t = y / H
         c = tuple(int(BG_TOP[i] + t * (BG_BOT[i] - BG_TOP[i])) for i in range(3))
         draw.line([(0, y), (W - 1, y)], fill=c)
+
+    # A soft glow behind the title, tinted to whoever is currently #1 - the
+    # leaderboard's tone shifts with the leader's rank instead of always
+    # looking the same regardless of who's on top.
+    leader_tier = rows[0]["overall_tier"] if rows else None
+    glow_color = scoring.TIER_COLOR.get(leader_tier, scoring.UNRANKED_COLOR)
+    GS = 160
+    glow = Image.new("L", (GS, GS), 0)
+    gdraw = ImageDraw.Draw(glow)
+    for r in range(GS // 2, 0, -1):
+        gdraw.ellipse([GS / 2 - r, GS / 2 - r, GS / 2 + r, GS / 2 + r],
+                     fill=int(120 * (1 - r / (GS / 2)) ** 2))
+    glow = glow.resize((W, HEADER_H), Image.LANCZOS)
+    img.paste(Image.new("RGB", glow.size, glow_color), (0, 0), glow)
+    draw = ImageDraw.Draw(img)
 
     fnt_title = _load_font(True, 50)      # was 40
     fnt_hdr   = _load_font(True, 22)      # was 18
@@ -1231,12 +1247,19 @@ def generate_standings_image(rows: list[dict], icons: dict | None = None) -> io.
     for idx, row in enumerate(rows):
         y = HEADER_H + idx * ROW_H
         mid = y + ROW_H // 2
-        if idx % 2 == 1:
-            draw.rectangle([(PAD, y), (W - PAD, y + ROW_H)], fill=(10, 18, 38))
         tier = row["overall_tier"]
         color = scoring.TIER_COLOR.get(tier, scoring.UNRANKED_COLOR)
+        if idx % 2 == 1:
+            # Tinted with the row's own title color rather than a flat navy -
+            # every other row now faintly echoes whose rank it belongs to.
+            row_tint = tuple(max(4, int(c * 0.16)) for c in color)
+            _shade_row(img, PAD, y, W - PAD, y + ROW_H, row_tint, alpha=0.55)
+        podium_color = PODIUM_COLORS.get(idx)
+        if podium_color is not None:
+            draw.rectangle([(PAD, y), (PAD + 6, y + ROW_H)], fill=podium_color)
 
-        draw.text((COL_POS, mid), f"#{idx + 1}", fill=GRAY, font=fnt_row, anchor="lm")
+        pos_color = podium_color or GRAY
+        draw.text((COL_POS, mid), f"#{idx + 1}", fill=pos_color, font=fnt_row, anchor="lm")
         draw.text((COL_NAME, mid), row["name"], fill=WHITE, font=fnt_row, anchor="lm")
         draw.text((COL_SCORE, mid), scoring.format_score(row["score_ms"]),
                   fill=color, font=fnt_row, anchor="rm")
