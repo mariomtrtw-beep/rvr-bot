@@ -1178,12 +1178,21 @@ def generate_standings_image(rows: list[dict], icons: dict | None = None) -> io.
     BG_TOP, BG_BOT = (2, 8, 22), (5, 3, 26)
     WHITE, GRAY, DIV, CYAN = (255, 255, 255), (140, 150, 170), (28, 48, 78), (0, 200, 255)
 
-    img = Image.new("RGB", (W, H), BG_TOP)
-    draw = ImageDraw.Draw(img)
-    for y in range(H):
-        t = y / H
-        c = tuple(int(BG_TOP[i] + t * (BG_BOT[i] - BG_TOP[i])) for i in range(3))
-        draw.line([(0, y), (W - 1, y)], fill=c)
+    # bg_leaderboard.png, cover-cropped and darkened - same helper the rank
+    # cards use, just with "leaderboard" standing in for a tier name so it
+    # resolves to that one shared file instead of a per-tier background.
+    custom_bg = _load_tier_background("leaderboard", (W, H))
+    if custom_bg is not None:
+        img = Image.new("RGB", (W, H), BG_TOP)
+        img.paste(Image.blend(custom_bg, Image.new("RGB", (W, H), (0, 0, 0)), 0.45))
+        draw = ImageDraw.Draw(img)
+    else:
+        img = Image.new("RGB", (W, H), BG_TOP)
+        draw = ImageDraw.Draw(img)
+        for y in range(H):
+            t = y / H
+            c = tuple(int(BG_TOP[i] + t * (BG_BOT[i] - BG_TOP[i])) for i in range(3))
+            draw.line([(0, y), (W - 1, y)], fill=c)
 
     # A soft glow behind the title, tinted to whoever is currently #1 - the
     # leaderboard's tone shifts with the leader's rank instead of always
@@ -1207,8 +1216,26 @@ def generate_standings_image(rows: list[dict], icons: dict | None = None) -> io.
     fnt_row   = _load_font(True, 30)      # was 24
     fnt_small = _load_font(False, 20)     # was 16
 
-    draw.text((W // 2, 30), "RVRU OVERALL STANDINGS", fill=CYAN, font=fnt_title, anchor="mt")
-    draw.text((W // 2, 100), "13 stock tracks · summed best time · lower is better",
+    # The logo replaces the text title when present - falls back to plain
+    # text for anyone running this without the art file, same philosophy as
+    # the tier backgrounds.
+    logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")
+    try:
+        logo = Image.open(logo_path).convert("RGBA")
+    except (FileNotFoundError, OSError):
+        logo = None
+
+    if logo is not None:
+        target_h = 110
+        scale = target_h / logo.height
+        logo = logo.resize((max(1, round(logo.width * scale)), target_h), Image.LANCZOS)
+        img.paste(logo, ((W - logo.width) // 2, 14), logo)
+        subtitle_y = 14 + target_h + 8
+    else:
+        draw.text((W // 2, 30), "RVRU OVERALL STANDINGS", fill=CYAN, font=fnt_title, anchor="mt")
+        subtitle_y = 100
+
+    draw.text((W // 2, subtitle_y), "13 stock tracks · summed best time · lower is better",
               fill=GRAY, font=fnt_small, anchor="mt")
 
     COL_POS, COL_NAME = PAD, PAD + 70
