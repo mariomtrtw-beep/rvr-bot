@@ -80,14 +80,15 @@ TIER_RANK = {None: 0, **{tier: i + 1 for i, tier in enumerate(TIER_ORDER)}}
 
 # Overall title: sum these per-track points across all 13 (untouched or
 # below-Street = 0) and compare against OVERALL_THRESHOLDS - not the weakest
-# track anymore. Even 12-point spacing, tied to the 4-point per-track scale:
-# roughly "a tier's worth of points across the board" to advance. Max possible
-# is 52 (13 x Legend); Legend overall needs 48, so there is a little slack for
-# one so-so track but not several. No coverage floor - a few brilliant tracks
-# can outweigh many mediocre ones, deliberately, since the old system's "one
-# weak track caps everything" is exactly what this replaces.
+# track anymore. Max possible is 52 (13 x Legend); Legend overall needs 48, so
+# there is a little slack for one so-so track but not several. The lower two
+# tiers are gentler than even spacing would give (10, 22 rather than 12, 24) -
+# the first two ranks should feel reachable early, with the real climb
+# concentrated at the top. No coverage floor - a few brilliant tracks can
+# outweigh many mediocre ones, deliberately, since the old system's "one weak
+# track caps everything" is exactly what this replaces.
 TIER_POINTS = {"Street": 1, "Hustler": 2, "Elite": 3, "Legend": 4}
-OVERALL_THRESHOLDS = [("Legend", 48), ("Elite", 36), ("Hustler", 24), ("Street", 12)]
+OVERALL_THRESHOLDS = [("Legend", 48), ("Elite", 35), ("Hustler", 22), ("Street", 10)]
 
 
 def overall_tier_from_points(points: int) -> str:
