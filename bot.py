@@ -1666,6 +1666,20 @@ def board_embed(track: str, ranked: list, guild=None) -> discord.Embed:
     leaderboard channel stays readable and free of bookkeeping.
     """
     canonical = scoring.is_canonical_track(track)
+
+    # Resolve display names once, purely to size the name column - padding
+    # position+name to the longest one on this board so time/rank reads as a
+    # right-hand block instead of a ragged wall of mentions. Best-effort only:
+    # Discord renders mentions in a variable, non-monospace width that isn't
+    # ours to control, so this cannot be pixel-perfect the way a code block
+    # or rendered image can - that trade was made deliberately to keep
+    # mentions clickable and pingable.
+    names = {}
+    for uid, _b in ranked:
+        member = guild.get_member(uid) if guild else None
+        names[uid] = member.display_name if member else f"user {uid}"
+    max_name_len = max((len(n) for n in names.values()), default=0)
+
     lines = []
     for place, (uid, b) in enumerate(ranked, 1):
         # Plain numbers for finishing position - a medal here would collide
@@ -1682,9 +1696,10 @@ def board_embed(track: str, ranked: list, guild=None) -> discord.Embed:
             tier = scoring.tier_for_time(b["time_ms"], track)
             if tier:
                 tier_txt = f"  ·  {tier_display(guild, tier)} {tier}"
+        pad = " " * (max_name_len - len(names[uid]) + 2)
         # Deliberately no run count: it would change the board on every race,
         # and this should only move when a time actually improves.
-        lines.append(f"{position} <@{uid}> — **`{ms_to_time(b['time_ms'])}`**{tier_txt}")
+        lines.append(f"{position} <@{uid}>{pad}—  **`{ms_to_time(b['time_ms'])}`**{tier_txt}")
 
     body = "\n".join(lines) if lines else "*no times posted yet*"
     embed = discord.Embed(title=f"🏁 {track}", description=body, color=0x00cfff)
