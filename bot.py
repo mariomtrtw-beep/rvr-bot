@@ -1025,6 +1025,11 @@ async def store_races(session: dict, races: list) -> tuple[list, int]:
         if race.counted and not scoring.is_canonical_track(race.track):
             race.counted = False
             race.reject_reason = "not one of the 13 scored tracks"
+        elif scoring.is_canonical_track(race.track):
+            # The coordinator's own casing varies ("SuperMarket 2") from ours
+            # ("Supermarket 2") - normalise to one string so every board and
+            # query agrees on what a track is called, not just what track it is.
+            race.track = scoring.TRACK_DISPLAY[scoring.track_key(race.track)]
 
         doc = {
             "game_id":    race.game_id,
@@ -1392,9 +1397,16 @@ async def best_per_track(track: str) -> tuple[list, dict, dict]:
     A repeat run only replaces a stored time if it is faster, so a board moves
     only when someone sets a personal best.
     """
+    want = scoring.track_key(track)
     best: dict[str, dict] = {}
     rejects: dict[str, dict] = {}
-    async for doc in races_col.find({"track": track, "counted": True}, {"entries": 1}):
+    # Match by normalised key, not exact string - documents stored before
+    # store_races started canonicalising the track name still have whatever
+    # casing the coordinator happened to send (e.g. "SuperMarket 2"), and an
+    # exact match would silently find nothing for them.
+    async for doc in races_col.find({"counted": True}, {"track": 1, "entries": 1}):
+        if scoring.track_key(doc.get("track", "")) != want:
+            continue
         for entry in doc["entries"]:
             if not entry.get("counted"):
                 if not actually_raced(entry):
@@ -1503,8 +1515,11 @@ def board_embed(track: str, ranked: list, guild=None) -> discord.Embed:
 
 async def why_nothing(track: str) -> str:
     """Plain reason a track produced no usable times, for the report."""
+    want = scoring.track_key(track)
     reasons: dict[str, int] = {}
-    async for doc in races_col.find({"track": track}, {"counted": 1, "reject": 1, "entries": 1}):
+    async for doc in races_col.find({}, {"track": 1, "counted": 1, "reject": 1, "entries": 1}):
+        if scoring.track_key(doc.get("track", "")) != want:
+            continue
         if not doc.get("counted"):
             reasons[doc.get("reject") or "race not counted"] = \
                 reasons.get(doc.get("reject") or "race not counted", 0) + 1
