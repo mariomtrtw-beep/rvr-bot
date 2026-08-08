@@ -1227,7 +1227,7 @@ def generate_standings_image(rows: list[dict], icons: dict | None = None) -> io.
     else:
         title_y = 30
 
-    draw.text((W // 2, title_y), "RVRU OVERALL STANDINGS", fill=CYAN, font=fnt_title, anchor="mt")
+    draw.text((W // 2, title_y), "RVRU B3L RANKINGS", fill=CYAN, font=fnt_title, anchor="mt")
     subtitle_y = title_y + 46
     draw.text((W // 2, subtitle_y), "13 stock tracks · summed best time · lower is better",
               fill=GRAY, font=fnt_small, anchor="mt")
