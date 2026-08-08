@@ -1104,7 +1104,7 @@ def generate_card_image(name: str, result: dict, best_times: dict,
     """One player's time and title on every one of the 13 tracks."""
     icons = icons or {}
     W, PAD = 700, 36
-    ROW_H, HEADER_H, FOOTER_H = 40, 148, 26
+    ROW_H, HEADER_H, FOOTER_H = 42, 168, 26
     tracks = scoring.CANONICAL_TRACK_KEYS
     H = HEADER_H + len(tracks) * ROW_H + FOOTER_H
 
@@ -1120,7 +1120,9 @@ def generate_card_image(name: str, result: dict, best_times: dict,
 
     fnt_title = _load_font(True, 32)
     fnt_sub   = _load_font(False, 17)
+    fnt_hdr   = _load_font(True, 15)
     fnt_row   = _load_font(True, 19)
+    fnt_tier  = _load_font(True, 19)     # was 15 and unbolded - too small to "pop"
     fnt_small = _load_font(False, 15)
 
     overall = result["overall_tier"]
@@ -1129,9 +1131,14 @@ def generate_card_image(name: str, result: dict, best_times: dict,
     draw.text((W // 2, 74), f"Overall: {overall}  ·  Score {scoring.format_score(result['score_ms'])}"
               f"  ·  {result['coverage']}/{result['total_tracks']} tracks",
               fill=overall_color, font=fnt_sub, anchor="mt")
-    draw.line([(PAD, HEADER_H - 6), (W - PAD, HEADER_H - 6)], fill=DIV, width=1)
 
-    COL_TRACK, COL_TIME, COL_TIER = PAD, W - PAD - 140, W - PAD
+    COL_TRACK, COL_TIME, COL_TIER = PAD, W - PAD - 150, W - PAD
+
+    hdr_y = 122
+    draw.text((COL_TRACK, hdr_y), "TRACK", fill=CYAN, font=fnt_hdr)
+    draw.text((COL_TIME,  hdr_y), "TIME",  fill=CYAN, font=fnt_hdr, anchor="ra")
+    draw.text((COL_TIER,  hdr_y), "RANK",  fill=CYAN, font=fnt_hdr, anchor="ra")
+    draw.line([(PAD, HEADER_H - 8), (W - PAD, HEADER_H - 8)], fill=DIV, width=1)
 
     for idx, key in enumerate(tracks):
         y = HEADER_H + idx * ROW_H
@@ -1141,14 +1148,18 @@ def generate_card_image(name: str, result: dict, best_times: dict,
 
         tier = result["per_track_tier"].get(key)
         color = scoring.TIER_COLOR.get(tier, GRAY)
-        time_txt = scoring.ms_to_time(best_times[key]) if key in best_times else "— not set —"
+        has_time = key in best_times
+        # A single dash lines up cleanly with the time column; the old phrase
+        # "— not set —" had dashes on both ends and read as misaligned next
+        # to plain digits even though both were right-anchored to the same x.
+        time_txt = scoring.ms_to_time(best_times[key]) if has_time else "—"
         tier_txt = tier or "—"
 
         draw.text((COL_TRACK, mid), scoring.TRACK_DISPLAY[key], fill=WHITE, font=fnt_row, anchor="lm")
-        draw.text((COL_TIME, mid), time_txt, fill=(GRAY if key not in best_times else color),
+        draw.text((COL_TIME, mid), time_txt, fill=(GRAY if not has_time else color),
                   font=fnt_row, anchor="rm")
-        draw.text((COL_TIER, mid), tier_txt, fill=color, font=fnt_small, anchor="rm")
-        _paste_icon_before(img, icons.get(tier), tier_txt, fnt_small, COL_TIER, mid, size=20)
+        draw.text((COL_TIER, mid), tier_txt, fill=color, font=fnt_tier, anchor="rm")
+        _paste_icon_before(img, icons.get(tier), tier_txt, fnt_tier, COL_TIER, mid, size=28)
 
     draw.line([(PAD, H - FOOTER_H + 2), (W - PAD, H - FOOTER_H + 2)], fill=DIV, width=1)
     draw.text((W // 2, H - FOOTER_H + 4), "Overall title = your weakest track",

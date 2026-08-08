@@ -30,7 +30,9 @@ TIER_ORDER = ["Street", "Hustler", "Elite", "Legend"]
 TIER_EMOJI = {"Street": "🥉", "Hustler": "🥈", "Elite": "🥇", "Legend": "👑"}
 TIER_COLOR = {                      # RGB, used by the image renderers
     "Street":  (190, 105, 40),
-    "Hustler": (170, 180, 195),
+    "Hustler": (110, 200, 255),      # bright icy blue - the old silver-gray
+                                     # was nearly indistinguishable from the
+                                     # plain gray used for "no tier / not set"
     "Elite":   (255, 200, 0),
     "Legend":  (255, 80, 210),
 }
