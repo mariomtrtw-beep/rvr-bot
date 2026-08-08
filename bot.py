@@ -1323,10 +1323,14 @@ def board_embed(track: str, ranked: list) -> discord.Embed:
         medal = ["🥇", "🥈", "🥉"][place - 1] if place <= 3 else f"`#{place}`"
         # Only the 13 scored tracks have tier thresholds - Rooftops and
         # customs get a time but no title, same as they get no overall score.
+        # No tier text at all when a canonical time misses Street - "below
+        # Street" was long enough to wrap mid-phrase in the embed, which read
+        # as a rendering glitch rather than a real result.
         tier_txt = ""
         if canonical:
             tier = scoring.tier_for_time(b["time_ms"], track)
-            tier_txt = f"  ·  {scoring.TIER_EMOJI[tier]} {tier}" if tier else "  ·  below Street"
+            if tier:
+                tier_txt = f"  ·  {scoring.TIER_EMOJI[tier]} {tier}"
         # Deliberately no run count: it would change the board on every race,
         # and this should only move when a time actually improves.
         lines.append(f"{medal} <@{uid}> — `{ms_to_time(b['time_ms'])}`"
@@ -1673,10 +1677,15 @@ async def refresh_cmd(ctx):
     else:
         await ctx.send("No track results stored yet.")
 
+    # !refresh means "put it up fresh" - forget the old standings post too,
+    # or recompute_standings sees an unchanged score and skips reposting even
+    # when the image itself changed (e.g. a layout fix, not a new time).
+    await state_col.delete_one({"key": "standings_board"})
     async with ctx.typing():
         events = await recompute_standings(ctx.guild)
     for event in events:
         await announce(ctx.guild, event)
+    await ctx.send("✅ Standings reposted.")
     await nudge_unlinked(ctx)
 
 
