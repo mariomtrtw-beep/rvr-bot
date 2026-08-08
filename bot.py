@@ -1006,13 +1006,36 @@ async def link_map() -> dict:
 
 
 # ── Overall standings (13-track score and title) ────────────────────────────
-def generate_standings_image(rows: list[dict]) -> io.BytesIO:
+def _paste_icon_before(img, icon, text: str, font, right_x: int, mid_y: int,
+                       gap: int = 6, size: int = 30):
+    """Place `icon` immediately left of where right-aligned `text` will start.
+
+    Computed from the text's own measured width, not a fixed slot, so it can
+    never collide with the text regardless of which tier word is showing.
+    Resizes a copy down to `size` if the cached icon is bigger - the cache
+    holds one size shared by both renderers, this fits it to each row height.
+    """
+    if icon is None:
+        return
+    if icon.width > size or icon.height > size:
+        icon = icon.copy()
+        icon.thumbnail((size, size), Image.LANCZOS)
+    text_w = ImageDraw.Draw(img).textlength(text, font=font)
+    icon_x = int(right_x - text_w - gap - icon.width)
+    icon_y = int(mid_y - icon.height / 2)
+    img.paste(icon, (icon_x, icon_y), icon)
+
+
+def generate_standings_image(rows: list[dict], icons: dict | None = None) -> io.BytesIO:
     """rows: sorted ascending by score_ms, each with name/score_ms/overall_tier/coverage.
+    icons: optional {tier: PIL.Image} from get_tier_icons(), for servers with
+    custom tier emoji uploaded - falls back to text-only for any tier missing.
 
     Every value column is right-aligned with its own fixed right edge, sized to
     the widest word that can appear in it ("Unranked" is the long pole) so
     columns cannot run into each other regardless of content.
     """
+    icons = icons or {}
     W, PAD = 1000, 44
     ROW_H, HEADER_H, FOOTER_H = 54, 158, 34
     H = HEADER_H + len(rows) * ROW_H + FOOTER_H
@@ -1037,8 +1060,9 @@ def generate_standings_image(rows: list[dict]) -> io.BytesIO:
               fill=GRAY, font=fnt_small, anchor="mt")
 
     COL_POS, COL_NAME = PAD, PAD + 60
-    COL_TRACKS, COL_TITLE, COL_SCORE = W - PAD, W - PAD - 103, W - PAD - 253
-    # gaps above sized from real measured widths: Unranked=110px, 655.393=90px
+    COL_TRACKS, COL_TITLE, COL_SCORE = W - PAD, W - PAD - 103, W - PAD - 280
+    # gaps above sized from real measured widths: Unranked=110px, 655.393=90px,
+    # plus room for a ~30px tier icon between the score and title columns
 
     hdr_y = 122
     draw.text((COL_POS,   hdr_y), "#",      fill=CYAN, font=fnt_hdr)
@@ -1061,6 +1085,7 @@ def generate_standings_image(rows: list[dict]) -> io.BytesIO:
         draw.text((COL_SCORE, mid), scoring.format_score(row["score_ms"]),
                   fill=color, font=fnt_row, anchor="rm")
         draw.text((COL_TITLE, mid), tier, fill=color, font=fnt_row, anchor="rm")
+        _paste_icon_before(img, icons.get(tier), tier, fnt_row, COL_TITLE, mid)
         draw.text((COL_TRACKS, mid), f"{row['coverage']}/{row['total_tracks']}",
                   fill=GRAY, font=fnt_small, anchor="rm")
 
@@ -1074,8 +1099,10 @@ def generate_standings_image(rows: list[dict]) -> io.BytesIO:
     return buf
 
 
-def generate_card_image(name: str, result: dict, best_times: dict) -> io.BytesIO:
+def generate_card_image(name: str, result: dict, best_times: dict,
+                        icons: dict | None = None) -> io.BytesIO:
     """One player's time and title on every one of the 13 tracks."""
+    icons = icons or {}
     W, PAD = 700, 36
     ROW_H, HEADER_H, FOOTER_H = 40, 148, 26
     tracks = scoring.CANONICAL_TRACK_KEYS
@@ -1121,6 +1148,7 @@ def generate_card_image(name: str, result: dict, best_times: dict) -> io.BytesIO
         draw.text((COL_TIME, mid), time_txt, fill=(GRAY if key not in best_times else color),
                   font=fnt_row, anchor="rm")
         draw.text((COL_TIER, mid), tier_txt, fill=color, font=fnt_small, anchor="rm")
+        _paste_icon_before(img, icons.get(tier), tier_txt, fnt_small, COL_TIER, mid, size=20)
 
     draw.line([(PAD, H - FOOTER_H + 2), (W - PAD, H - FOOTER_H + 2)], fill=DIV, width=1)
     draw.text((W // 2, H - FOOTER_H + 4), "Overall title = your weakest track",
@@ -1216,7 +1244,8 @@ async def refresh_standings_board(guild, rows: list[dict]) -> None:
     if doc and doc.get("fingerprint") == fingerprint:
         return
 
-    buf = generate_standings_image(rows)
+    icons = await get_tier_icons(guild)
+    buf = generate_standings_image(rows, icons)
     if doc and doc.get("channel_id") == channel.id:
         try:
             message = await channel.fetch_message(doc["message_id"])
@@ -1261,7 +1290,8 @@ async def card_cmd(ctx, member: discord.Member = None):
     result = {"score_ms": doc["score_ms"], "coverage": doc["coverage"],
              "total_tracks": len(scoring.CANONICAL_TRACK_KEYS),
              "overall_tier": doc["overall_tier"], "per_track_tier": doc["per_track_tier"]}
-    buf = generate_card_image(doc["name"], result, doc["best_times"])
+    icons = await get_tier_icons(ctx.guild)
+    buf = generate_card_image(doc["name"], result, doc["best_times"], icons)
     await ctx.send(file=discord.File(buf, filename="card.png"))
 
 
@@ -1322,6 +1352,39 @@ def tier_display(guild, tier: str) -> str:
         if custom:
             return str(custom)
     return scoring.TIER_EMOJI[tier]
+
+
+# Keyed by (guild_id, tier, emoji_id) so re-uploading an emoji (new id) or
+# moving servers naturally misses the cache instead of serving a stale icon.
+_TIER_ICON_CACHE: dict[tuple, "Image.Image"] = {}
+
+
+async def get_tier_icons(guild) -> dict[str, "Image.Image"]:
+    """Pre-fetch each tier's custom emoji as a small RGBA image, for pasting
+    into the rendered boards. A tier missing from the result just means "no
+    custom icon uploaded for it" - the renderers fall back to text alone.
+
+    Renderers stay synchronous, pure PIL functions with no network access of
+    their own; this is the only part that talks to Discord, run once up front.
+    """
+    icons: dict[str, "Image.Image"] = {}
+    if not guild:
+        return icons
+    for tier in scoring.TIER_ORDER:
+        emoji = discord.utils.get(guild.emojis, name=f"tier_{tier.lower()}")
+        if not emoji:
+            continue
+        key = (guild.id, tier, emoji.id)
+        if key not in _TIER_ICON_CACHE:
+            try:
+                data = await emoji.read()
+                icon = Image.open(io.BytesIO(data)).convert("RGBA")
+                icon.thumbnail((40, 40), Image.LANCZOS)
+                _TIER_ICON_CACHE[key] = icon
+            except Exception:
+                continue          # network hiccup - just skip it this render
+        icons[tier] = _TIER_ICON_CACHE[key]
+    return icons
 
 
 def board_embed(track: str, ranked: list, guild=None) -> discord.Embed:
