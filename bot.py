@@ -1280,7 +1280,16 @@ async def recompute_standings(guild) -> list[str]:
     for row in rows:
         prev = await driver_stats_col.find_one({"uid": row["uid"]})
         if prev:
+            # score_driver fills in every one of the 13 tracks, untouched ones
+            # included (as tier None), so a missing key here does not exist -
+            # only best_times tells us whether they had ever actually raced
+            # this specific track before. Without this check, a player's
+            # first-ever result on any new track "promotes" them the moment
+            # they already have a driver_stats row from some other track.
+            prev_times = prev.get("best_times") or {}
             for tkey, new_tier in row["per_track_tier"].items():
+                if tkey not in prev_times:
+                    continue
                 old_tier = (prev.get("per_track_tier") or {}).get(tkey)
                 if scoring.TIER_RANK.get(new_tier, 0) > scoring.TIER_RANK.get(old_tier, 0):
                     events.append(f"{tier_display(guild, new_tier)} <@{row['uid']}> reached "
@@ -1486,7 +1495,7 @@ def board_embed(track: str, ranked: list, guild=None) -> discord.Embed:
         lines.append(f"{position} <@{uid}> — `{ms_to_time(b['time_ms'])}`"
                      f"  ·  best lap `{ms_to_time(b['best_lap_ms'])}`{tier_txt}")
 
-    body = "\n".join(lines) if lines else "*no times yet*"
+    body = "\n".join(lines) if lines else "*no times posted yet*"
     embed = discord.Embed(title=f"🏁 {track}", description=body, color=0x00cfff)
     embed.set_footer(text="updates when someone sets a personal best")
     return embed
@@ -1556,9 +1565,7 @@ async def refresh_board(channel, track: str, raced: set | None = None,
     """
     events = events if events is not None else []
     ranked, waiting, excluded = await best_per_track(track)
-
-    if not ranked and not waiting:
-        return f"⚠️ **{track}** — nothing counted ({await why_nothing(track)})"
+    empty = not ranked and not waiting
 
     embed       = board_embed(track, ranked, guild=channel.guild)
     fingerprint = embed.description
@@ -1576,8 +1583,12 @@ async def refresh_board(channel, track: str, raced: set | None = None,
 
     held = f"  ·  {len(waiting)} waiting on a link" if waiting else ""
 
-    # Nothing changed - do not touch Discord at all
+    # Nothing changed - do not touch Discord at all. The board still exists
+    # (or gets created below) either way, even for a track nobody has raced -
+    # this is the fixed 13-track board, not a lazily-appearing one.
     if board and board.get("fingerprint") == fingerprint:
+        if empty:
+            return f"⚪ **{track}** — no times posted yet"
         return f"➖ **{track}** — no change, nobody improved{held}"
 
     # Work out what is worth announcing, before the board is overwritten
@@ -1616,6 +1627,8 @@ async def refresh_board(channel, track: str, raced: set | None = None,
 
     message = await channel.send(embed=embed)
     await save({"channel_id": channel.id, "message_id": message.id})
+    if empty:
+        return f"🆕 **{track}** — board posted (no times yet)"
     return f"🆕 **{track}** — board posted{held}"
 
 
@@ -1814,18 +1827,19 @@ async def refresh_cmd(ctx):
 
     Needed after moving the times channel, or after linking someone whose
     results were being held - also recomputes the overall standings.
+
+    Always the fixed 13-track list, Toys in the Hood 1 through Toytanic 2, not
+    just tracks that happen to have results - a track nobody has raced yet
+    still gets a board, saying so, in its proper place in the order.
     """
     board_ch = await get_channel(ctx.guild, "times") or ctx.channel
     await boards_col.update_many({}, {"$unset": {"message_id": "", "channel_id": "",
                                                  "fingerprint": ""}})
-    tracks = await races_col.distinct("track", {"counted": True})
-    if tracks:
-        async with ctx.typing():
-            lines, _ = await refresh_boards(board_ch, sorted(tracks))
-        await ctx.send(f"🔁 Rebuilt {len(lines)} board(s) in {board_ch.mention}. "
-                       f"Delete the old messages by hand.")
-    else:
-        await ctx.send("No track results stored yet.")
+    tracks = [scoring.TRACK_DISPLAY[k] for k in scoring.CANONICAL_TRACK_KEYS]
+    async with ctx.typing():
+        lines, _ = await refresh_boards(board_ch, tracks)
+    await ctx.send(f"🔁 Rebuilt {len(lines)} board(s) in {board_ch.mention}. "
+                   f"Delete the old messages by hand.")
 
     # !refresh means "put it up fresh" - forget the old standings post too,
     # or recompute_standings sees an unchanged score and skips reposting even
