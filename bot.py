@@ -1007,9 +1007,14 @@ async def link_map() -> dict:
 
 # ── Overall standings (13-track score and title) ────────────────────────────
 def generate_standings_image(rows: list[dict]) -> io.BytesIO:
-    """rows: sorted ascending by score_ms, each with name/score_ms/overall_tier/coverage."""
-    W, PAD = 900, 40
-    ROW_H, HEADER_H, FOOTER_H = 54, 110, 30
+    """rows: sorted ascending by score_ms, each with name/score_ms/overall_tier/coverage.
+
+    Every value column is right-aligned with its own fixed right edge, sized to
+    the widest word that can appear in it ("Unranked" is the long pole) so
+    columns cannot run into each other regardless of content.
+    """
+    W, PAD = 1000, 44
+    ROW_H, HEADER_H, FOOTER_H = 54, 158, 34
     H = HEADER_H + len(rows) * ROW_H + FOOTER_H
 
     BG_TOP, BG_BOT = (2, 8, 22), (5, 3, 26)
@@ -1023,21 +1028,25 @@ def generate_standings_image(rows: list[dict]) -> io.BytesIO:
         draw.line([(0, y), (W - 1, y)], fill=c)
 
     fnt_title = _load_font(True, 40)
-    fnt_hdr   = _load_font(True, 20)
+    fnt_hdr   = _load_font(True, 18)
     fnt_row   = _load_font(True, 24)
-    fnt_small = _load_font(False, 17)
+    fnt_small = _load_font(False, 16)
 
-    draw.text((W // 2, 30), "RVRU OVERALL STANDINGS", fill=CYAN, font=fnt_title, anchor="mt")
-    draw.text((W // 2, 78), "13 stock tracks · summed best time · lower is better",
+    draw.text((W // 2, 26), "RVRU OVERALL STANDINGS", fill=CYAN, font=fnt_title, anchor="mt")
+    draw.text((W // 2, 84), "13 stock tracks · summed best time · lower is better",
               fill=GRAY, font=fnt_small, anchor="mt")
-    draw.line([(PAD, HEADER_H - 6), (W - PAD, HEADER_H - 6)], fill=DIV, width=1)
 
-    COL_POS, COL_NAME, COL_SCORE, COL_TITLE, COL_COV = PAD, PAD + 60, W - PAD - 260, W - PAD - 130, W - PAD
+    COL_POS, COL_NAME = PAD, PAD + 60
+    COL_TRACKS, COL_TITLE, COL_SCORE = W - PAD, W - PAD - 103, W - PAD - 253
+    # gaps above sized from real measured widths: Unranked=110px, 655.393=90px
 
-    draw.text((COL_POS, HEADER_H - 26), "#", fill=CYAN, font=fnt_hdr)
-    draw.text((COL_NAME, HEADER_H - 26), "DRIVER", fill=CYAN, font=fnt_hdr)
-    draw.text((COL_SCORE, HEADER_H - 26), "SCORE", fill=CYAN, font=fnt_hdr, anchor="rt")
-    draw.text((COL_COV, HEADER_H - 26), "TRACKS", fill=CYAN, font=fnt_hdr, anchor="rt")
+    hdr_y = 122
+    draw.text((COL_POS,   hdr_y), "#",      fill=CYAN, font=fnt_hdr)
+    draw.text((COL_NAME,  hdr_y), "DRIVER", fill=CYAN, font=fnt_hdr)
+    draw.text((COL_SCORE, hdr_y), "SCORE",  fill=CYAN, font=fnt_hdr, anchor="ra")
+    draw.text((COL_TITLE, hdr_y), "TITLE",  fill=CYAN, font=fnt_hdr, anchor="ra")
+    draw.text((COL_TRACKS,hdr_y), "TRACKS", fill=CYAN, font=fnt_hdr, anchor="ra")
+    draw.line([(PAD, HEADER_H - 8), (W - PAD, HEADER_H - 8)], fill=DIV, width=1)
 
     for idx, row in enumerate(rows):
         y = HEADER_H + idx * ROW_H
@@ -1051,12 +1060,12 @@ def generate_standings_image(rows: list[dict]) -> io.BytesIO:
         draw.text((COL_NAME, mid), row["name"], fill=WHITE, font=fnt_row, anchor="lm")
         draw.text((COL_SCORE, mid), scoring.format_score(row["score_ms"]),
                   fill=color, font=fnt_row, anchor="rm")
-        draw.text((COL_TITLE, mid), tier, fill=color, font=fnt_row, anchor="lm")
-        draw.text((COL_COV, mid), f"{row['coverage']}/{row['total_tracks']}",
+        draw.text((COL_TITLE, mid), tier, fill=color, font=fnt_row, anchor="rm")
+        draw.text((COL_TRACKS, mid), f"{row['coverage']}/{row['total_tracks']}",
                   fill=GRAY, font=fnt_small, anchor="rm")
 
-    draw.line([(PAD, H - FOOTER_H + 4), (W - PAD, H - FOOTER_H + 4)], fill=DIV, width=1)
-    draw.text((W // 2, H - FOOTER_H + 8), "Unranked until every track has a time",
+    draw.line([(PAD, H - FOOTER_H + 6), (W - PAD, H - FOOTER_H + 6)], fill=DIV, width=1)
+    draw.text((W // 2, H - FOOTER_H + 12), "Unranked until every track has a time",
               fill=GRAY, font=fnt_small, anchor="mt")
 
     buf = io.BytesIO()
@@ -1068,7 +1077,7 @@ def generate_standings_image(rows: list[dict]) -> io.BytesIO:
 def generate_card_image(name: str, result: dict, best_times: dict) -> io.BytesIO:
     """One player's time and title on every one of the 13 tracks."""
     W, PAD = 700, 36
-    ROW_H, HEADER_H, FOOTER_H = 40, 130, 26
+    ROW_H, HEADER_H, FOOTER_H = 40, 148, 26
     tracks = scoring.CANONICAL_TRACK_KEYS
     H = HEADER_H + len(tracks) * ROW_H + FOOTER_H
 
@@ -1089,8 +1098,8 @@ def generate_card_image(name: str, result: dict, best_times: dict) -> io.BytesIO
 
     overall = result["overall_tier"]
     overall_color = scoring.TIER_COLOR.get(overall, scoring.UNRANKED_COLOR)
-    draw.text((W // 2, 20), name, fill=WHITE, font=fnt_title, anchor="mt")
-    draw.text((W // 2, 60), f"Overall: {overall}  ·  Score {scoring.format_score(result['score_ms'])}"
+    draw.text((W // 2, 18), name, fill=WHITE, font=fnt_title, anchor="mt")
+    draw.text((W // 2, 74), f"Overall: {overall}  ·  Score {scoring.format_score(result['score_ms'])}"
               f"  ·  {result['coverage']}/{result['total_tracks']} tracks",
               fill=overall_color, font=fnt_sub, anchor="mt")
     draw.line([(PAD, HEADER_H - 6), (W - PAD, HEADER_H - 6)], fill=DIV, width=1)
@@ -1308,13 +1317,20 @@ def board_embed(track: str, ranked: list) -> discord.Embed:
     Held and excluded results are reported where !fetch was run, not here - the
     leaderboard channel stays readable and free of bookkeeping.
     """
+    canonical = scoring.is_canonical_track(track)
     lines = []
     for place, (uid, b) in enumerate(ranked, 1):
         medal = ["🥇", "🥈", "🥉"][place - 1] if place <= 3 else f"`#{place}`"
+        # Only the 13 scored tracks have tier thresholds - Rooftops and
+        # customs get a time but no title, same as they get no overall score.
+        tier_txt = ""
+        if canonical:
+            tier = scoring.tier_for_time(b["time_ms"], track)
+            tier_txt = f"  ·  {scoring.TIER_EMOJI[tier]} {tier}" if tier else "  ·  below Street"
         # Deliberately no run count: it would change the board on every race,
         # and this should only move when a time actually improves.
         lines.append(f"{medal} <@{uid}> — `{ms_to_time(b['time_ms'])}`"
-                     f"  ·  best lap `{ms_to_time(b['best_lap_ms'])}`")
+                     f"  ·  best lap `{ms_to_time(b['best_lap_ms'])}`{tier_txt}")
 
     body = "\n".join(lines) if lines else "*no times yet*"
     embed = discord.Embed(title=f"🏁 {track}", description=body, color=0x00cfff)
