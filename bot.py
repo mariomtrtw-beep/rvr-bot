@@ -1263,7 +1263,8 @@ def generate_card_image(name: str, result: dict, best_times: dict,
     H = HEADER_H + len(tracks) * ROW_H + FOOTER_H
 
     BG_TOP, BG_BOT = (2, 8, 22), (5, 3, 26)
-    WHITE, GRAY, DIV, CYAN = (255, 255, 255), (140, 150, 170), (28, 48, 78), (0, 200, 255)
+    WHITE, GRAY, DIV = (255, 255, 255), (140, 150, 170), (28, 48, 78)
+    HDR_COLOR = (215, 218, 225)   # was cyan - column labels read as neutral now
 
     # Custom art per rank, e.g. bg_legend.png in the project root, sized to
     # exactly (W, H) - always 700x740 for a 13-track card. Falls back to the
@@ -1328,16 +1329,21 @@ def generate_card_image(name: str, result: dict, best_times: dict,
                                  # so every row's text starts at the same x
 
     hdr_y = 122
-    draw.text((COL_TRACK, hdr_y), "TRACK", fill=CYAN, font=fnt_hdr)
-    draw.text((COL_TIME,  hdr_y), "TIME",  fill=CYAN, font=fnt_hdr, anchor="ra")
-    draw.text((COL_RANK,  hdr_y), "RANK",  fill=CYAN, font=fnt_hdr)
+    draw.text((COL_TRACK, hdr_y), "TRACK", fill=HDR_COLOR, font=fnt_hdr)
+    draw.text((COL_TIME,  hdr_y), "TIME",  fill=HDR_COLOR, font=fnt_hdr, anchor="ra")
+    draw.text((COL_RANK,  hdr_y), "RANK",  fill=HDR_COLOR, font=fnt_hdr)
     draw.line([(PAD, HEADER_H - 8), (W - PAD, HEADER_H - 8)], fill=DIV, width=1)
+
+    # A dark, muted version of the player's own rank color, not a fixed navy -
+    # keeps the same hue as the border/glow instead of a color unrelated to it.
+    # Scaled well down so it still reads as a subtle stripe, not a colored bar.
+    row_tint = tuple(max(4, int(c * 0.16)) for c in overall_color)
 
     for idx, key in enumerate(tracks):
         y = HEADER_H + idx * ROW_H
         mid = y + ROW_H // 2
         if idx % 2 == 1:
-            _shade_row(img, PAD, y, W - PAD, y + ROW_H)
+            _shade_row(img, PAD, y, W - PAD, y + ROW_H, color=row_tint)
 
         tier = result["per_track_tier"].get(key)
         color = scoring.TIER_COLOR.get(tier, GRAY)
