@@ -1171,7 +1171,7 @@ def generate_standings_image(rows: list[dict], icons: dict | None = None) -> io.
                   fill=GRAY, font=fnt_small, anchor="rm")
 
     draw.line([(PAD, H - FOOTER_H + 6), (W - PAD, H - FOOTER_H + 6)], fill=DIV, width=1)
-    draw.text((W // 2, H - FOOTER_H + 12), "Unranked until every track has a time",
+    draw.text((W // 2, H - FOOTER_H + 12), "Title is earned from points per track - no need to race all 13",
               fill=GRAY, font=fnt_small, anchor="mt")
 
     buf = io.BytesIO()
@@ -1211,7 +1211,8 @@ def generate_card_image(name: str, result: dict, best_times: dict,
     # be a dim gray that all but disappeared against the near-black background.
     overall_color = scoring.TIER_COLOR.get(overall, scoring.UNRANKED_COLOR)
     draw.text((W // 2, 18), name, fill=WHITE, font=fnt_title, anchor="mt")
-    draw.text((W // 2, 74), f"Rank: {overall}  ·  Score {scoring.format_score(result['score_ms'])}"
+    draw.text((W // 2, 74), f"Rank: {overall} ({result['overall_points']} pts)  ·  "
+              f"Score {scoring.format_score(result['score_ms'])}"
               f"  ·  {result['coverage']}/{result['total_tracks']} tracks",
               fill=overall_color, font=fnt_sub, anchor="mt")
 
@@ -1255,7 +1256,7 @@ def generate_card_image(name: str, result: dict, best_times: dict,
                   font=fnt_tier, anchor="lm")
 
     draw.line([(PAD, H - FOOTER_H + 2), (W - PAD, H - FOOTER_H + 2)], fill=DIV, width=1)
-    draw.text((W // 2, H - FOOTER_H + 4), "Overall title = your weakest track",
+    draw.text((W // 2, H - FOOTER_H + 4), "Rank comes from points earned per track (Street=1 .. Legend=4)",
               fill=GRAY, font=fnt_small, anchor="mt")
 
     buf = io.BytesIO()
@@ -1338,6 +1339,7 @@ async def recompute_standings(guild) -> list[str]:
             {"uid": row["uid"]},
             {"$set": {"uid": row["uid"], "name": row["name"], "score_ms": row["score_ms"],
                       "coverage": row["coverage"], "overall_tier": row["overall_tier"],
+                      "overall_points": row["overall_points"],
                       "per_track_tier": row["per_track_tier"], "best_times": row["best_times"],
                       "updated_at": now}},
             upsert=True)
@@ -1402,7 +1404,8 @@ async def card_cmd(ctx, member: discord.Member = None):
 
     result = {"score_ms": doc["score_ms"], "coverage": doc["coverage"],
              "total_tracks": len(scoring.CANONICAL_TRACK_KEYS),
-             "overall_tier": doc["overall_tier"], "per_track_tier": doc["per_track_tier"]}
+             "overall_tier": doc["overall_tier"], "per_track_tier": doc["per_track_tier"],
+             "overall_points": doc.get("overall_points", 0)}
     icons = await get_tier_icons(ctx.guild)
     buf = generate_card_image(doc["name"], result, doc["best_times"], icons)
     await ctx.send(file=discord.File(buf, filename="card.png"))

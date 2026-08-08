@@ -7,10 +7,12 @@ with no time yet costs 1.5x that track's Street threshold, so skipping a track
 is always worse than actually racing it, however slowly.
 
 Titles are per track first: four fixed time targets per track, independent of
-who else has raced. A driver's overall title is the WEAKEST tier they hold
-across all 13 - not an average, not a majority. One slow track holds the whole
-title down, on purpose: the title should only ever say something about a
-driver's worst driving, never their best. See tier_for_time / overall_tier.
+who else has raced. Each per-track tier is worth points (Street=1 up to
+Legend=4); a driver's overall title comes from the SUM of those points across
+all 13 (untouched or below-Street tracks contribute 0), compared against
+OVERALL_THRESHOLDS. Deliberately not the weakest track and not gated on
+touching every track - a handful of excellent tracks can outrank many
+mediocre ones. See tier_for_time / score_driver.
 
 Standalone and pure: no Discord, no database, no network. Everything here is a
 plain function over dicts of milliseconds, so it can be tested and re-tuned
@@ -75,7 +77,24 @@ THRESHOLDS_MS: dict[str, dict[str, int]] = {
 }
 
 TIER_RANK = {None: 0, **{tier: i + 1 for i, tier in enumerate(TIER_ORDER)}}
-RANK_TIER = {v: k for k, v in TIER_RANK.items() if k is not None}
+
+# Overall title: sum these per-track points across all 13 (untouched or
+# below-Street = 0) and compare against OVERALL_THRESHOLDS - not the weakest
+# track anymore. Even 12-point spacing, tied to the 4-point per-track scale:
+# roughly "a tier's worth of points across the board" to advance. Max possible
+# is 52 (13 x Legend); Legend overall needs 48, so there is a little slack for
+# one so-so track but not several. No coverage floor - a few brilliant tracks
+# can outweigh many mediocre ones, deliberately, since the old system's "one
+# weak track caps everything" is exactly what this replaces.
+TIER_POINTS = {"Street": 1, "Hustler": 2, "Elite": 3, "Legend": 4}
+OVERALL_THRESHOLDS = [("Legend", 48), ("Elite", 36), ("Hustler", 24), ("Street", 12)]
+
+
+def overall_tier_from_points(points: int) -> str:
+    for tier, threshold in OVERALL_THRESHOLDS:
+        if points >= threshold:
+            return tier
+    return UNRANKED
 
 
 def is_canonical_track(track_name: str) -> bool:
@@ -115,14 +134,14 @@ def score_driver(best_times: dict[str, int]) -> dict:
             score_ms += penalty_ms(key)
             per_track_tier[key] = None
 
-    overall_rank = min(TIER_RANK[per_track_tier[k]] for k in CANONICAL_TRACK_KEYS)
+    overall_points = sum(TIER_POINTS.get(t, 0) for t in per_track_tier.values())
     return {
         "score_ms":       score_ms,
         "coverage":       coverage,
         "total_tracks":   len(CANONICAL_TRACK_KEYS),
         "per_track_tier": per_track_tier,
-        "overall_tier":   RANK_TIER.get(overall_rank, UNRANKED),
-        "overall_rank":   overall_rank,
+        "overall_tier":   overall_tier_from_points(overall_points),
+        "overall_points": overall_points,
     }
 
 
@@ -138,21 +157,35 @@ def ms_to_time(ms: int) -> str:
 
 
 if __name__ == "__main__":
-    # Quick self-check: a driver strong everywhere except one weak track.
+    # A driver strong everywhere except one weak track: overall title is no
+    # longer capped by the weak track, since the other 12 Legend tracks (48
+    # points) alone already clear the Legend threshold.
     times = {k: THRESHOLDS_MS[k]["Legend"] for k in CANONICAL_TRACK_KEYS}
     weak = CANONICAL_TRACK_KEYS[0]
-    times[weak] = THRESHOLDS_MS[weak]["Street"]        # only clears Street here
-
+    times[weak] = THRESHOLDS_MS[weak]["Street"]
     result = score_driver(times)
-    print(f"score: {format_score(result['score_ms'])}  "
-          f"({result['coverage']}/{result['total_tracks']} tracks)")
-    print(f"overall title: {result['overall_tier']}  "
-          f"(should be Street - {TRACK_DISPLAY[weak]} is the weak link)")
-    assert result["overall_tier"] == "Street"
+    print(f"12 Legend + 1 Street -> {result['overall_points']} pts, "
+          f"{result['overall_tier']} (expected Legend, not capped by {TRACK_DISPLAY[weak]})")
+    assert result["overall_tier"] == "Legend"
 
+    # The trade-off this system is built for: a handful of excellent tracks
+    # can outrank touching every track at a mediocre level.
+    few_but_legend = {k: THRESHOLDS_MS[k]["Legend"] for k in CANONICAL_TRACK_KEYS[:6]}
+    r1 = score_driver(few_but_legend)
+    print(f"6 Legend, 7 untouched -> {r1['overall_points']} pts, {r1['overall_tier']}")
+    assert r1["overall_tier"] == "Hustler"                # 6*4 = 24
+
+    all_but_street = {k: THRESHOLDS_MS[k]["Street"] for k in CANONICAL_TRACK_KEYS}
+    r2 = score_driver(all_but_street)
+    print(f"all 13 at Street -> {r2['overall_points']} pts, {r2['overall_tier']}")
+    assert r2["overall_tier"] == "Street"                 # 13*1 = 13, still under Hustler's 24
+
+    # Missing a track still costs more on the time-based Score than a bad
+    # time on it does - that mechanic is unrelated to the title change above.
     missing = dict(times)
     del missing[weak]
     penalized = score_driver(missing)
     assert penalized["score_ms"] > result["score_ms"], "missing a track must cost more than a bad time on it"
-    assert penalized["overall_tier"] == UNRANKED
-    print("missing-track penalty and Unranked gating: OK")
+
+    assert score_driver({})["overall_tier"] == UNRANKED   # nothing raced at all
+    print("score penalty and title thresholds: OK")
