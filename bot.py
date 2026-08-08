@@ -1129,6 +1129,17 @@ def _load_tier_background(tier: str, size: tuple):
     return img.crop((x, y, x + W, y + H))
 
 
+def _shade_row(img, x1: int, y1: int, x2: int, y2: int,
+               color: tuple = (10, 18, 38), alpha: float = 0.55):
+    """Darken a row for zebra striping without fully erasing whatever
+    background sits under it - a plain opaque rectangle here would blank out
+    the glow/watermark/custom art on every other row instead of just tinting it.
+    """
+    region = img.crop((x1, y1, x2, y2))
+    tint = Image.new("RGB", region.size, color)
+    img.paste(Image.blend(region, tint, alpha), (x1, y1))
+
+
 def _tier_glow_background(tier: str, size: tuple, icon) -> "Image.Image":
     """Automatic per-rank styling for when no hand-made bg_<tier>.png exists:
     a soft glow in the tier's color, a huge faint watermark of its own icon,
@@ -1326,7 +1337,7 @@ def generate_card_image(name: str, result: dict, best_times: dict,
         y = HEADER_H + idx * ROW_H
         mid = y + ROW_H // 2
         if idx % 2 == 1:
-            draw.rectangle([(PAD, y), (W - PAD, y + ROW_H)], fill=(10, 18, 38))
+            _shade_row(img, PAD, y, W - PAD, y + ROW_H)
 
         tier = result["per_track_tier"].get(key)
         color = scoring.TIER_COLOR.get(tier, GRAY)
