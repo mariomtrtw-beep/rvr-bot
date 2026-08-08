@@ -1072,25 +1072,6 @@ async def link_map() -> dict:
 
 
 # ── Overall standings (13-track score and title) ────────────────────────────
-def _paste_icon_before(img, icon, text: str, font, right_x: int, mid_y: int,
-                       gap: int = 6, size: int = 30):
-    """Place `icon` immediately left of where right-aligned `text` will start.
-
-    Computed from the text's own measured width, not a fixed slot, so it can
-    never collide with the text regardless of which tier word is showing.
-    Resizes a copy down to `size` if the cached icon is bigger - the cache
-    holds one size shared by both renderers, this fits it to each row height.
-    """
-    if icon is None:
-        return
-    if icon.width > size or icon.height > size:
-        icon = icon.copy()
-        icon.thumbnail((size, size), Image.LANCZOS)
-    text_w = ImageDraw.Draw(img).textlength(text, font=font)
-    icon_x = int(right_x - text_w - gap - icon.width)
-    icon_y = int(mid_y - icon.height / 2)
-    img.paste(icon, (icon_x, icon_y), icon)
-
 
 def _paste_icon_at(img, icon, left_x: int, mid_y: int, size: int = 26):
     """Place `icon` at a fixed left x, vertically centered on `mid_y`.
@@ -1196,7 +1177,6 @@ def generate_standings_image(rows: list[dict], icons: dict | None = None) -> io.
 
     BG_TOP, BG_BOT = (2, 8, 22), (5, 3, 26)
     WHITE, GRAY, DIV, CYAN = (255, 255, 255), (140, 150, 170), (28, 48, 78), (0, 200, 255)
-    PODIUM_COLORS = {0: (255, 215, 0), 1: (200, 205, 215), 2: (205, 127, 50)}  # gold/silver/bronze
 
     img = Image.new("RGB", (W, H), BG_TOP)
     draw = ImageDraw.Draw(img)
@@ -1207,17 +1187,19 @@ def generate_standings_image(rows: list[dict], icons: dict | None = None) -> io.
 
     # A soft glow behind the title, tinted to whoever is currently #1 - the
     # leaderboard's tone shifts with the leader's rank instead of always
-    # looking the same regardless of who's on top.
+    # looking the same regardless of who's on top. Built as a single small
+    # blurred dot rather than hand-drawn rings, so the falloff is smooth and
+    # spread wide instead of reading as a hard-edged circle.
     leader_tier = rows[0]["overall_tier"] if rows else None
     glow_color = scoring.TIER_COLOR.get(leader_tier, scoring.UNRANKED_COLOR)
-    GS = 160
-    glow = Image.new("L", (GS, GS), 0)
-    gdraw = ImageDraw.Draw(glow)
-    for r in range(GS // 2, 0, -1):
-        gdraw.ellipse([GS / 2 - r, GS / 2 - r, GS / 2 + r, GS / 2 + r],
-                     fill=int(120 * (1 - r / (GS / 2)) ** 2))
-    glow = glow.resize((W, HEADER_H), Image.LANCZOS)
-    img.paste(Image.new("RGB", glow.size, glow_color), (0, 0), glow)
+    GS = 200
+    dot = Image.new("L", (GS, GS), 0)
+    ImageDraw.Draw(dot).ellipse([GS * 0.35, GS * 0.35, GS * 0.65, GS * 0.65], fill=255)
+    dot = dot.filter(ImageFilter.GaussianBlur(GS * 0.22))
+    glow_h = int(HEADER_H * 1.6)
+    glow = dot.resize((int(W * 0.75), glow_h), Image.LANCZOS)
+    glow = glow.point(lambda a: int(a * 0.4))
+    img.paste(Image.new("RGB", glow.size, glow_color), ((W - glow.width) // 2, -int(glow_h * 0.25)), glow)
     draw = ImageDraw.Draw(img)
 
     fnt_title = _load_font(True, 50)      # was 40
@@ -1244,27 +1226,33 @@ def generate_standings_image(rows: list[dict], icons: dict | None = None) -> io.
     draw.text((COL_TRACKS,hdr_y), "TRACKS", fill=CYAN, font=fnt_hdr, anchor="ra")
     draw.line([(PAD, HEADER_H - 10), (W - PAD, HEADER_H - 10)], fill=DIV, width=1)
 
+    # Icons sit at one fixed left edge down the whole column, sized off the
+    # widest tier word ("Hustler") - not measured per-row - so every icon
+    # lines up regardless of how long that row's own tier word is.
+    icon_size = 38
+    icon_gap = 10
+    max_word_w = max(draw.textlength(t, font=fnt_row) for t in scoring.TIER_ORDER)
+    icon_x = int(COL_TITLE - max_word_w - icon_gap - icon_size)
+
     for idx, row in enumerate(rows):
         y = HEADER_H + idx * ROW_H
         mid = y + ROW_H // 2
         tier = row["overall_tier"]
         color = scoring.TIER_COLOR.get(tier, scoring.UNRANKED_COLOR)
-        if idx % 2 == 1:
-            # Tinted with the row's own title color rather than a flat navy -
-            # every other row now faintly echoes whose rank it belongs to.
-            row_tint = tuple(max(4, int(c * 0.16)) for c in color)
-            _shade_row(img, PAD, y, W - PAD, y + ROW_H, row_tint, alpha=0.55)
-        podium_color = PODIUM_COLORS.get(idx)
-        if podium_color is not None:
-            draw.rectangle([(PAD, y), (PAD + 6, y + ROW_H)], fill=podium_color)
+        # Every row is tinted with its own title color - not just every other
+        # one - so a tier never goes unhighlighted just by landing on an even
+        # row. Alternating alpha keeps a subtle zebra read without any row
+        # going fully untinted.
+        row_tint = tuple(max(6, int(c * 0.32)) for c in color)
+        _shade_row(img, PAD, y, W - PAD, y + ROW_H, row_tint,
+                  alpha=0.8 if idx % 2 == 1 else 0.5)
 
-        pos_color = podium_color or GRAY
-        draw.text((COL_POS, mid), f"#{idx + 1}", fill=pos_color, font=fnt_row, anchor="lm")
+        draw.text((COL_POS, mid), f"#{idx + 1}", fill=GRAY, font=fnt_row, anchor="lm")
         draw.text((COL_NAME, mid), row["name"], fill=WHITE, font=fnt_row, anchor="lm")
         draw.text((COL_SCORE, mid), scoring.format_score(row["score_ms"]),
                   fill=color, font=fnt_row, anchor="rm")
         draw.text((COL_TITLE, mid), tier, fill=color, font=fnt_row, anchor="rm")
-        _paste_icon_before(img, icons.get(tier), tier, fnt_row, COL_TITLE, mid, size=38)
+        _paste_icon_at(img, icons.get(tier), icon_x, mid, size=icon_size)
         draw.text((COL_TRACKS, mid), f"{row['coverage']}/{row['total_tracks']}",
                   fill=GRAY, font=fnt_small, anchor="rm")
 
