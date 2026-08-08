@@ -1342,13 +1342,12 @@ async def best_per_track(track: str) -> tuple[list, dict, dict]:
 
 
 def tier_display(guild, tier: str) -> str:
-    """Custom :tier_<name>: emoji if the server has uploaded one, else the
-    built-in unicode fallback - so this works before anyone uploads anything.
-
-    Name the emojis exactly tier_street, tier_hustler, tier_elite, tier_legend.
+    """Custom :street:/:hustler:/:elite:/:legend: emoji if the server has
+    uploaded one, else the built-in unicode fallback - so this works before
+    anyone uploads anything.
     """
     if guild:
-        custom = discord.utils.get(guild.emojis, name=f"tier_{tier.lower()}")
+        custom = discord.utils.get(guild.emojis, name=tier.lower())
         if custom:
             return str(custom)
     return scoring.TIER_EMOJI[tier]
@@ -1371,7 +1370,7 @@ async def get_tier_icons(guild) -> dict[str, "Image.Image"]:
     if not guild:
         return icons
     for tier in scoring.TIER_ORDER:
-        emoji = discord.utils.get(guild.emojis, name=f"tier_{tier.lower()}")
+        emoji = discord.utils.get(guild.emojis, name=tier.lower())
         if not emoji:
             continue
         key = (guild.id, tier, emoji.id)
