@@ -1092,6 +1092,21 @@ def _paste_icon_before(img, icon, text: str, font, right_x: int, mid_y: int,
     img.paste(icon, (icon_x, icon_y), icon)
 
 
+def _paste_icon_at(img, icon, left_x: int, mid_y: int, size: int = 26):
+    """Place `icon` at a fixed left x, vertically centered on `mid_y`.
+
+    For a left-aligned icon+text column, where every row's icon should line up
+    at the same x regardless of how wide that row's tier word is.
+    """
+    if icon is None:
+        return
+    if icon.width > size or icon.height > size:
+        icon = icon.copy()
+        icon.thumbnail((size, size), Image.LANCZOS)
+    icon_y = int(mid_y - icon.height / 2)
+    img.paste(icon, (left_x, icon_y), icon)
+
+
 def generate_standings_image(rows: list[dict], icons: dict | None = None) -> io.BytesIO:
     """rows: sorted ascending by score_ms, each with name/score_ms/overall_tier/coverage.
     icons: optional {tier: PIL.Image} from get_tier_icons(), for servers with
@@ -1185,25 +1200,30 @@ def generate_card_image(name: str, result: dict, best_times: dict,
         draw.line([(0, y), (W - 1, y)], fill=c)
 
     fnt_title = _load_font(True, 32)
-    fnt_sub   = _load_font(False, 17)
+    fnt_sub   = _load_font(True, 18)     # was unbolded 17 - read as faint next to the name
     fnt_hdr   = _load_font(True, 15)
     fnt_row   = _load_font(True, 19)
     fnt_tier  = _load_font(True, 19)     # was 15 and unbolded - too small to "pop"
     fnt_small = _load_font(False, 15)
 
     overall = result["overall_tier"]
+    # Unranked has no tier color of its own; TIER_COLOR.get's fallback used to
+    # be a dim gray that all but disappeared against the near-black background.
     overall_color = scoring.TIER_COLOR.get(overall, scoring.UNRANKED_COLOR)
     draw.text((W // 2, 18), name, fill=WHITE, font=fnt_title, anchor="mt")
-    draw.text((W // 2, 74), f"Overall: {overall}  ·  Score {scoring.format_score(result['score_ms'])}"
+    draw.text((W // 2, 74), f"Rank: {overall}  ·  Score {scoring.format_score(result['score_ms'])}"
               f"  ·  {result['coverage']}/{result['total_tracks']} tracks",
               fill=overall_color, font=fnt_sub, anchor="mt")
 
-    COL_TRACK, COL_TIME, COL_TIER = PAD, W - PAD - 150, W - PAD
+    COL_TRACK, COL_TIME = PAD, W - PAD - 150
+    COL_RANK = W - PAD - 128     # left edge of the rank column, icon then text
+    RANK_ICON_SLOT = 26          # reserved whether or not this row has an icon,
+                                 # so every row's text starts at the same x
 
     hdr_y = 122
     draw.text((COL_TRACK, hdr_y), "TRACK", fill=CYAN, font=fnt_hdr)
     draw.text((COL_TIME,  hdr_y), "TIME",  fill=CYAN, font=fnt_hdr, anchor="ra")
-    draw.text((COL_TIER,  hdr_y), "RANK",  fill=CYAN, font=fnt_hdr, anchor="ra")
+    draw.text((COL_RANK,  hdr_y), "RANK",  fill=CYAN, font=fnt_hdr)
     draw.line([(PAD, HEADER_H - 8), (W - PAD, HEADER_H - 8)], fill=DIV, width=1)
 
     for idx, key in enumerate(tracks):
@@ -1224,8 +1244,15 @@ def generate_card_image(name: str, result: dict, best_times: dict,
         draw.text((COL_TRACK, mid), scoring.TRACK_DISPLAY[key], fill=WHITE, font=fnt_row, anchor="lm")
         draw.text((COL_TIME, mid), time_txt, fill=(GRAY if not has_time else color),
                   font=fnt_row, anchor="rm")
-        draw.text((COL_TIER, mid), tier_txt, fill=color, font=fnt_tier, anchor="rm")
-        _paste_icon_before(img, icons.get(tier), tier_txt, fnt_tier, COL_TIER, mid, size=28)
+        # Left-aligned: icon at a fixed x, text always starts right after the
+        # reserved icon slot - right-aligning both meant a short word like
+        # "Elite" put its icon in a different spot than a long one like
+        # "Hustler", so the icons never lined up down the column.
+        icon = icons.get(tier)
+        if icon:
+            _paste_icon_at(img, icon, COL_RANK, mid, size=RANK_ICON_SLOT)
+        draw.text((COL_RANK + RANK_ICON_SLOT + 6, mid), tier_txt, fill=color,
+                  font=fnt_tier, anchor="lm")
 
     draw.line([(PAD, H - FOOTER_H + 2), (W - PAD, H - FOOTER_H + 2)], fill=DIV, width=1)
     draw.text((W // 2, H - FOOTER_H + 4), "Overall title = your weakest track",

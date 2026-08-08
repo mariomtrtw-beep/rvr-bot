@@ -37,7 +37,7 @@ TIER_COLOR = {                      # RGB, used by the image renderers
     "Legend":  (255, 80, 210),
 }
 UNRANKED = "Unranked"
-UNRANKED_COLOR = (110, 120, 140)
+UNRANKED_COLOR = (185, 195, 210)      # was too dark to read against the near-black background
 
 LAPS = 3                            # B3L - divides the summed score for display
 PENALTY_MULT = 1.5                  # a missing track costs 1.5x its Street time
