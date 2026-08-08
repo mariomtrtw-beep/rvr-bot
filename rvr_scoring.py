@@ -53,19 +53,23 @@ def _ms(mmssms: str) -> int:
 # Display name -> (Street, Hustler, Elite, Legend), each strictly faster than
 # the last. 3-lap B3L targets, harder than RVR's own - see the repo history
 # for the derivation from revoltrace.net's public results.
+#
+# Insertion order here is the fixed display order used everywhere a full
+# track list is shown - #times boards, !refresh, and every player card - not
+# alphabetical, so this dict's order is load-bearing, not incidental.
 _THRESHOLDS_RAW: dict[str, tuple[str, str, str, str]] = {
     "Toys in the Hood 1": ("02:06:000", "02:05:000", "02:04:000", "02:03:500"),
-    "Toys in the Hood 2": ("01:51:000", "01:50:000", "01:49:000", "01:48:500"),
-    "Supermarket 1":      ("01:44:000", "01:43:000", "01:41:500", "01:40:500"),
     "Supermarket 2":      ("00:54:000", "00:53:000", "00:52:200", "00:51:900"),
-    "Museum 1":           ("02:35:000", "02:34:000", "02:31:500", "02:30:200"),
     "Museum 2":           ("01:48:000", "01:47:000", "01:45:800", "01:44:600"),
     "Botanical Garden":   ("01:10:000", "01:09:500", "01:09:000", "01:08:800"),
     "Toy World 1":        ("01:10:000", "01:08:600", "01:08:000", "01:07:600"),
-    "Toy World 2":        ("01:29:000", "01:28:000", "01:27:000", "01:26:700"),
     "Ghost Town 1":       ("01:08:300", "01:07:500", "01:06:500", "01:05:900"),
-    "Ghost Town 2":       ("01:36:500", "01:35:500", "01:34:500", "01:34:000"),
+    "Toy World 2":        ("01:29:000", "01:28:000", "01:27:000", "01:26:700"),
+    "Toys in the Hood 2": ("01:51:000", "01:50:000", "01:49:000", "01:48:500"),
     "Toytanic 1":         ("02:20:000", "02:19:000", "02:18:500", "02:18:000"),
+    "Museum 1":           ("02:35:000", "02:34:000", "02:31:500", "02:30:200"),
+    "Supermarket 1":      ("01:44:000", "01:43:000", "01:41:500", "01:40:500"),
+    "Ghost Town 2":       ("01:36:500", "01:35:500", "01:34:500", "01:34:000"),
     "Toytanic 2":         ("02:21:000", "02:19:500", "02:18:500", "02:17:800"),
 }
 
