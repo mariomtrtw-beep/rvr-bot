@@ -1107,6 +1107,28 @@ def _paste_icon_at(img, icon, left_x: int, mid_y: int, size: int = 26):
     img.paste(icon, (left_x, icon_y), icon)
 
 
+def _load_tier_background(tier: str, size: tuple):
+    """A hand-made bg_<tier>.png from the project root, filled to exactly
+    `size` - or None if that tier has no custom art yet, same fallback
+    philosophy as the tier emoji: missing just means "use the plain look".
+
+    Scaled to cover the canvas and center-cropped, never stretched, so an
+    image with a different aspect ratio than the card doesn't distort.
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"bg_{tier.lower()}.png")
+    try:
+        img = Image.open(path).convert("RGB")
+    except (FileNotFoundError, OSError):
+        return None
+    W, H = size
+    src_w, src_h = img.size
+    scale = max(W / src_w, H / src_h)
+    new_w, new_h = max(1, round(src_w * scale)), max(1, round(src_h * scale))
+    img = img.resize((new_w, new_h), Image.LANCZOS)
+    x, y = (new_w - W) // 2, (new_h - H) // 2
+    return img.crop((x, y, x + W, y + H))
+
+
 def generate_standings_image(rows: list[dict], icons: dict | None = None) -> io.BytesIO:
     """rows: sorted ascending by score_ms, each with name/score_ms/overall_tier/coverage.
     icons: optional {tier: PIL.Image} from get_tier_icons(), for servers with
@@ -1192,12 +1214,23 @@ def generate_card_image(name: str, result: dict, best_times: dict,
     BG_TOP, BG_BOT = (2, 8, 22), (5, 3, 26)
     WHITE, GRAY, DIV, CYAN = (255, 255, 255), (140, 150, 170), (28, 48, 78), (0, 200, 255)
 
+    # Custom art per rank, e.g. bg_legend.png in the project root, sized to
+    # exactly (W, H) - always 700x740 for a 13-track card. Falls back to the
+    # plain gradient for any rank with no file yet, so this can be filled in
+    # one tier at a time.
+    custom_bg = _load_tier_background(result["overall_tier"], (W, H))
     img = Image.new("RGB", (W, H), BG_TOP)
     draw = ImageDraw.Draw(img)
-    for y in range(H):
-        t = y / H
-        c = tuple(int(BG_TOP[i] + t * (BG_BOT[i] - BG_TOP[i])) for i in range(3))
-        draw.line([(0, y), (W - 1, y)], fill=c)
+    if custom_bg is not None:
+        # Darken so text drawn on top stays legible regardless of how bright
+        # or busy the supplied artwork is - the layout was designed against a
+        # near-black background and every text color assumes that contrast.
+        img.paste(Image.blend(custom_bg, Image.new("RGB", (W, H), (0, 0, 0)), 0.45))
+    else:
+        for y in range(H):
+            t = y / H
+            c = tuple(int(BG_TOP[i] + t * (BG_BOT[i] - BG_TOP[i])) for i in range(3))
+            draw.line([(0, y), (W - 1, y)], fill=c)
 
     fnt_title = _load_font(True, 32)
     fnt_sub   = _load_font(True, 18)     # was unbolded 17 - read as faint next to the name
