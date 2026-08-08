@@ -707,6 +707,59 @@ def build_standings(ranked: list, mention: bool) -> tuple[str, str, str]:
     return podium_text, rest_text, winner_str
 
 
+@bot.command(name="resetseason")
+@admin_or_dev()
+async def resetseason_cmd(ctx, confirm: str = ""):
+    """Wipe every stored race, board and standing - !resetseason confirm
+
+    For starting the 13-track season clean. Deletes the actual #times and
+    standings messages too, best effort, not just the database rows - nothing
+    is left behind for someone to notice and wonder about.
+    """
+    if confirm.lower() != "confirm":
+        races_n  = await races_col.count_documents({})
+        boards_n = await boards_col.count_documents({})
+        drivers_n = await driver_stats_col.count_documents({})
+        await ctx.send(
+            f"⚠️ This deletes **{races_n} race(s)**, **{boards_n} track board(s)** and "
+            f"**{drivers_n} scored driver(s)** for good, including the posted messages.\n"
+            f"Run `!resetseason confirm` to actually do it.")
+        return
+
+    deleted_messages = 0
+    async for board in boards_col.find({}, {"channel_id": 1, "message_id": 1}):
+        if not board.get("channel_id") or not board.get("message_id"):
+            continue
+        channel = ctx.guild.get_channel(board["channel_id"])
+        if channel:
+            try:
+                msg = await channel.fetch_message(board["message_id"])
+                await msg.delete()
+                deleted_messages += 1
+            except (discord.NotFound, discord.Forbidden):
+                pass
+
+    standings_doc = await state_col.find_one({"key": "standings_board"})
+    if standings_doc and standings_doc.get("channel_id") and standings_doc.get("message_id"):
+        channel = ctx.guild.get_channel(standings_doc["channel_id"])
+        if channel:
+            try:
+                msg = await channel.fetch_message(standings_doc["message_id"])
+                await msg.delete()
+                deleted_messages += 1
+            except (discord.NotFound, discord.Forbidden):
+                pass
+
+    races_n   = (await races_col.delete_many({})).deleted_count
+    boards_n  = (await boards_col.delete_many({})).deleted_count
+    drivers_n = (await driver_stats_col.delete_many({})).deleted_count
+    await state_col.delete_one({"key": "standings_board"})
+
+    await ctx.send(f"✅ Wiped **{races_n} race(s)**, **{boards_n} track board(s)**, "
+                   f"**{drivers_n} scored driver(s)**, and deleted {deleted_messages} "
+                   f"posted message(s). The 13-track season starts clean from here.")
+
+
 @bot.command(name="listmembers")
 @admin_or_dev()
 async def list_members(ctx):
@@ -965,6 +1018,14 @@ async def store_races(session: dict, races: list) -> tuple[list, int]:
     for race in races:
         if race.finished_at is None:
             continue                      # still being played
+
+        # Only the 13 scored tracks are tracked at all now - mutated in place
+        # so the Mongo doc and the race object fetch_cmd reports from (and
+        # decides which #times board to refresh) always agree.
+        if race.counted and not scoring.is_canonical_track(race.track):
+            race.counted = False
+            race.reject_reason = "not one of the 13 scored tracks"
+
         doc = {
             "game_id":    race.game_id,
             "session_id": session.get("ID"),
@@ -2409,6 +2470,7 @@ async def rvr_help(ctx):
     embed.add_field(name="!setchannel <role> #chan", value="Set the leaderboard / times / activity / commands channel", inline=False)
     embed.add_field(name="!channels",                    value="Show which channel is used for what", inline=False)
     embed.add_field(name="!refresh", value="Post every track board and the standings again", inline=False)
+    embed.add_field(name="!resetseason confirm", value="Wipe every stored race, board and standing - starts the season clean", inline=False)
     embed.add_field(name="!unlinked",                    value="Racers with held results and no Discord user yet", inline=False)
     embed.add_field(name="!link <ingame name> @user",    value="Link an in-game name to a Discord user so results score to them", inline=False)
     embed.add_field(name="!linksuggest",                 value="Show which in-game names auto-match a Discord member (no changes)", inline=False)
