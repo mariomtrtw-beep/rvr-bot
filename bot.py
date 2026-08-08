@@ -1172,27 +1172,21 @@ def generate_standings_image(rows: list[dict], icons: dict | None = None) -> io.
     """
     icons = icons or {}
     W, PAD = 1000, 44
-    ROW_H, HEADER_H, FOOTER_H = 67, 197, 42     # +~25% over the original sizing
+    ROW_H, HEADER_H, FOOTER_H = 67, 280, 42     # header grew for the logo + title stack
     H = HEADER_H + len(rows) * ROW_H + FOOTER_H
 
     BG_TOP, BG_BOT = (2, 8, 22), (5, 3, 26)
     WHITE, GRAY, DIV, CYAN = (255, 255, 255), (140, 150, 170), (28, 48, 78), (0, 200, 255)
 
-    # bg_leaderboard.png, cover-cropped and darkened - same helper the rank
-    # cards use, just with "leaderboard" standing in for a tier name so it
-    # resolves to that one shared file instead of a per-tier background.
-    custom_bg = _load_tier_background("leaderboard", (W, H))
-    if custom_bg is not None:
-        img = Image.new("RGB", (W, H), BG_TOP)
-        img.paste(Image.blend(custom_bg, Image.new("RGB", (W, H), (0, 0, 0)), 0.45))
-        draw = ImageDraw.Draw(img)
-    else:
-        img = Image.new("RGB", (W, H), BG_TOP)
-        draw = ImageDraw.Draw(img)
-        for y in range(H):
-            t = y / H
-            c = tuple(int(BG_TOP[i] + t * (BG_BOT[i] - BG_TOP[i])) for i in range(3))
-            draw.line([(0, y), (W - 1, y)], fill=c)
+    # Plain gradient only - no custom board art. A roster of a handful of
+    # racers vs. dozens makes the board's height wildly variable, and a single
+    # static image cover-cropped to that range does not hold up seamlessly.
+    img = Image.new("RGB", (W, H), BG_TOP)
+    draw = ImageDraw.Draw(img)
+    for y in range(H):
+        t = y / H
+        c = tuple(int(BG_TOP[i] + t * (BG_BOT[i] - BG_TOP[i])) for i in range(3))
+        draw.line([(0, y), (W - 1, y)], fill=c)
 
     # A soft glow behind the title, tinted to whoever is currently #1 - the
     # leaderboard's tone shifts with the leader's rank instead of always
@@ -1211,14 +1205,13 @@ def generate_standings_image(rows: list[dict], icons: dict | None = None) -> io.
     img.paste(Image.new("RGB", glow.size, glow_color), ((W - glow.width) // 2, -int(glow_h * 0.25)), glow)
     draw = ImageDraw.Draw(img)
 
-    fnt_title = _load_font(True, 50)      # was 40
+    fnt_title = _load_font(True, 34)      # title line below the logo
     fnt_hdr   = _load_font(True, 22)      # was 18
     fnt_row   = _load_font(True, 30)      # was 24
     fnt_small = _load_font(False, 20)     # was 16
 
-    # The logo replaces the text title when present - falls back to plain
-    # text for anyone running this without the art file, same philosophy as
-    # the tier backgrounds.
+    # Logo above a text title, not instead of it - the logo alone read as too
+    # bare without any words on the board itself.
     logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")
     try:
         logo = Image.open(logo_path).convert("RGBA")
@@ -1226,15 +1219,16 @@ def generate_standings_image(rows: list[dict], icons: dict | None = None) -> io.
         logo = None
 
     if logo is not None:
-        target_h = 110
+        target_h = 150
         scale = target_h / logo.height
         logo = logo.resize((max(1, round(logo.width * scale)), target_h), Image.LANCZOS)
-        img.paste(logo, ((W - logo.width) // 2, 14), logo)
-        subtitle_y = 14 + target_h + 8
+        img.paste(logo, ((W - logo.width) // 2, 10), logo)
+        title_y = 10 + target_h + 6
     else:
-        draw.text((W // 2, 30), "RVRU OVERALL STANDINGS", fill=CYAN, font=fnt_title, anchor="mt")
-        subtitle_y = 100
+        title_y = 30
 
+    draw.text((W // 2, title_y), "RVRU OVERALL STANDINGS", fill=CYAN, font=fnt_title, anchor="mt")
+    subtitle_y = title_y + 46
     draw.text((W // 2, subtitle_y), "13 stock tracks · summed best time · lower is better",
               fill=GRAY, font=fnt_small, anchor="mt")
 
@@ -1245,7 +1239,7 @@ def generate_standings_image(rows: list[dict], icons: dict | None = None) -> io.
     # gaps re-measured at the bigger font: Unranked=138px, 655.393=111px, plus
     # room for a ~38px tier icon between the score and title columns
 
-    hdr_y = 152
+    hdr_y = 246
     draw.text((COL_POS,   hdr_y), "#",      fill=CYAN, font=fnt_hdr)
     draw.text((COL_NAME,  hdr_y), "DRIVER", fill=CYAN, font=fnt_hdr)
     draw.text((COL_SCORE, hdr_y), "SCORE",  fill=CYAN, font=fnt_hdr, anchor="ra")
