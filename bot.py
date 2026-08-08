@@ -1129,6 +1129,46 @@ def _load_tier_background(tier: str, size: tuple):
     return img.crop((x, y, x + W, y + H))
 
 
+def _tier_glow_background(tier: str, size: tuple, icon) -> "Image.Image":
+    """Automatic per-rank styling for when no hand-made bg_<tier>.png exists:
+    a soft glow in the tier's color, a huge faint watermark of its own icon,
+    and a thin accent border - built from data already on hand, no art needed.
+    """
+    W, H = size
+    color = scoring.TIER_COLOR.get(tier, scoring.UNRANKED_COLOR)
+    BG_TOP, BG_BOT = (2, 8, 22), (5, 3, 26)
+
+    img = Image.new("RGB", (W, H), BG_TOP)
+    draw = ImageDraw.Draw(img)
+    for y in range(H):
+        t = y / H
+        c = tuple(int(BG_TOP[i] + t * (BG_BOT[i] - BG_TOP[i])) for i in range(3))
+        draw.line([(0, y), (W - 1, y)], fill=c)
+
+    # Built small and scaled up, not drawn pixel-by-pixel at full card size.
+    GS = 160
+    glow = Image.new("L", (GS, GS), 0)
+    gdraw = ImageDraw.Draw(glow)
+    for r in range(GS // 2, 0, -1):
+        gdraw.ellipse([GS / 2 - r, GS / 2 - r, GS / 2 + r, GS / 2 + r],
+                     fill=int(130 * (1 - r / (GS / 2)) ** 2))
+    glow = glow.resize((W, int(H * 0.6)), Image.LANCZOS)
+    img.paste(Image.new("RGB", glow.size, color), (0, int(H * 0.1)), glow)
+
+    # A huge, faint version of the player's own rank icon as background
+    # texture, if their server has uploaded one - this is the "bigger rank
+    # symbol" a tiny inline icon can't be without crowding the header line.
+    if icon is not None:
+        wm = icon.convert("RGBA").copy()
+        wm.thumbnail((int(W * 0.62), int(W * 0.62)), Image.LANCZOS)
+        alpha = wm.split()[3].point(lambda a: int(a * 0.16))
+        wm.putalpha(alpha)
+        img.paste(wm, ((W - wm.width) // 2, int(H * 0.27)), wm)
+
+    ImageDraw.Draw(img).rectangle([(0, 0), (W - 1, H - 1)], outline=color, width=3)
+    return img
+
+
 def generate_standings_image(rows: list[dict], icons: dict | None = None) -> io.BytesIO:
     """rows: sorted ascending by score_ms, each with name/score_ms/overall_tier/coverage.
     icons: optional {tier: PIL.Image} from get_tier_icons(), for servers with
@@ -1219,18 +1259,18 @@ def generate_card_image(name: str, result: dict, best_times: dict,
     # plain gradient for any rank with no file yet, so this can be filled in
     # one tier at a time.
     custom_bg = _load_tier_background(result["overall_tier"], (W, H))
-    img = Image.new("RGB", (W, H), BG_TOP)
-    draw = ImageDraw.Draw(img)
     if custom_bg is not None:
         # Darken so text drawn on top stays legible regardless of how bright
         # or busy the supplied artwork is - the layout was designed against a
         # near-black background and every text color assumes that contrast.
+        img = Image.new("RGB", (W, H), BG_TOP)
         img.paste(Image.blend(custom_bg, Image.new("RGB", (W, H), (0, 0, 0)), 0.45))
     else:
-        for y in range(H):
-            t = y / H
-            c = tuple(int(BG_TOP[i] + t * (BG_BOT[i] - BG_TOP[i])) for i in range(3))
-            draw.line([(0, y), (W - 1, y)], fill=c)
+        # No hand-made background for this rank - style one automatically
+        # instead of the old flat gradient, using the tier's own color and icon.
+        img = _tier_glow_background(result["overall_tier"], (W, H),
+                                    (icons or {}).get(result["overall_tier"]))
+    draw = ImageDraw.Draw(img)
 
     fnt_title = _load_font(True, 32)
     fnt_sub   = _load_font(True, 18)     # was unbolded 17 - read as faint next to the name
@@ -1255,7 +1295,7 @@ def generate_card_image(name: str, result: dict, best_times: dict,
               f"Score {scoring.format_score(result['score_ms'])}"
               f"  ·  {result['coverage']}/{result['total_tracks']} tracks")
     icon    = icons.get(overall)
-    ICON_H  = 20
+    ICON_H  = 26          # was 20 - too small next to the name above it
     prefix_w = draw.textlength(prefix, font=fnt_sub)
     tier_w   = draw.textlength(overall, font=fnt_sub)
     suffix_w = draw.textlength(suffix, font=fnt_sub)
