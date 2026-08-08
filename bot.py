@@ -1478,7 +1478,10 @@ async def recompute_standings(guild) -> list[str]:
 
 
 async def refresh_standings_board(guild, rows: list[dict]) -> None:
-    """Edit the one standings message in place, only when it actually changed."""
+    """Delete the previous standings message and post a fresh one, only when
+    it actually changed - never edited in place, so the board always reads as
+    a clean new post rather than a silently-updated attachment.
+    """
     channel = await get_channel(guild, "leaderboard")
     if not channel:
         return
@@ -1488,18 +1491,15 @@ async def refresh_standings_board(guild, rows: list[dict]) -> None:
     if doc and doc.get("fingerprint") == fingerprint:
         return
 
+    if doc and doc.get("channel_id") == channel.id and doc.get("message_id"):
+        try:
+            old = await channel.fetch_message(doc["message_id"])
+            await old.delete()
+        except (discord.NotFound, discord.Forbidden):
+            pass                              # already gone, or we cannot see it
+
     icons = await get_tier_icons(guild)
     buf = generate_standings_image(rows, icons)
-    if doc and doc.get("channel_id") == channel.id:
-        try:
-            message = await channel.fetch_message(doc["message_id"])
-            await message.edit(attachments=[discord.File(buf, filename="standings.png")])
-            await state_col.update_one({"key": "standings_board"},
-                                       {"$set": {"fingerprint": fingerprint}})
-            return
-        except (discord.NotFound, discord.Forbidden):
-            pass                              # deleted or inaccessible - repost fresh
-
     message = await channel.send(file=discord.File(buf, filename="standings.png"))
     await state_col.update_one(
         {"key": "standings_board"},
@@ -1785,21 +1785,23 @@ async def refresh_board(channel, track: str, raced: set | None = None,
                       "bests": new_bests, "podium": new_podium, **extra}}, upsert=True)
 
     # A board row can exist without a message: !refresh clears the id on purpose,
-    # and an older row may predate it. Only try to edit when we really have one,
-    # and only in the channel it was posted to.
+    # and an older row may predate it. Only try to delete when we really have
+    # one, and only in the channel it was posted to - then always post fresh,
+    # never edit in place, so a change always reads as a clean new post.
     existing = board.get("message_id") if board else None
+    was_update = bool(existing)
     if existing and board.get("channel_id") == channel.id:
         try:
-            message = await channel.fetch_message(existing)
-            await message.edit(embed=embed)
-            await save({})
-            note = ("🏆 new best: " + ", ".join(improved)) if improved else "updated"
-            return f"✅ **{track}** — {note}{held}"
+            old = await channel.fetch_message(existing)
+            await old.delete()
         except (discord.NotFound, discord.Forbidden):
-            pass                      # deleted by hand, or we cannot see it - repost
+            pass                      # already gone, or we cannot see it
 
     message = await channel.send(embed=embed)
     await save({"channel_id": channel.id, "message_id": message.id})
+    if was_update:
+        note = ("🏆 new best: " + ", ".join(improved)) if improved else "updated"
+        return f"✅ **{track}** — {note}{held}"
     if empty:
         return f"🆕 **{track}** — board posted (no times yet)"
     return f"🆕 **{track}** — board posted{held}"
@@ -2006,18 +2008,19 @@ async def refresh_cmd(ctx):
     still gets a board, saying so, in its proper place in the order.
     """
     board_ch = await get_channel(ctx.guild, "times") or ctx.channel
-    await boards_col.update_many({}, {"$unset": {"message_id": "", "channel_id": "",
-                                                 "fingerprint": ""}})
+    # Only forget the fingerprint, not message_id/channel_id - refresh_board
+    # needs those to find and delete the old post itself. A full !resetseason
+    # is what wipes the id fields for a truly clean slate.
+    await boards_col.update_many({}, {"$unset": {"fingerprint": ""}})
     tracks = [scoring.TRACK_DISPLAY[k] for k in scoring.CANONICAL_TRACK_KEYS]
     async with ctx.typing():
         lines, _ = await refresh_boards(board_ch, tracks)
-    await ctx.send(f"🔁 Rebuilt {len(lines)} board(s) in {board_ch.mention}. "
-                   f"Delete the old messages by hand.")
+    await ctx.send(f"🔁 Rebuilt {len(lines)} board(s) in {board_ch.mention}.")
 
-    # !refresh means "put it up fresh" - forget the old standings post too,
+    # !refresh means "put it up fresh" - forget the standings fingerprint too,
     # or recompute_standings sees an unchanged score and skips reposting even
     # when the image itself changed (e.g. a layout fix, not a new time).
-    await state_col.delete_one({"key": "standings_board"})
+    await state_col.update_one({"key": "standings_board"}, {"$unset": {"fingerprint": ""}})
     async with ctx.typing():
         events = await recompute_standings(ctx.guild)
     for event in events:
