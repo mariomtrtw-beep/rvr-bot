@@ -1504,8 +1504,7 @@ def board_embed(track: str, ranked: list, guild=None) -> discord.Embed:
                 tier_txt = f"  ·  {tier_display(guild, tier)} {tier}"
         # Deliberately no run count: it would change the board on every race,
         # and this should only move when a time actually improves.
-        lines.append(f"{position} <@{uid}> — **`{ms_to_time(b['time_ms'])}`**"
-                     f"  ·  BL `{ms_to_time(b['best_lap_ms'])}`{tier_txt}")
+        lines.append(f"{position} <@{uid}> — **`{ms_to_time(b['time_ms'])}`**{tier_txt}")
 
     body = "\n".join(lines) if lines else "*no times posted yet*"
     embed = discord.Embed(title=f"🏁 {track}", description=body, color=0x00cfff)
