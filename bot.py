@@ -1211,10 +1211,32 @@ def generate_card_image(name: str, result: dict, best_times: dict,
     # be a dim gray that all but disappeared against the near-black background.
     overall_color = scoring.TIER_COLOR.get(overall, scoring.UNRANKED_COLOR)
     draw.text((W // 2, 18), name, fill=WHITE, font=fnt_title, anchor="mt")
-    draw.text((W // 2, 74), f"Rank: {overall} ({result['overall_points']} pts)  ·  "
+
+    # The subtitle is centered as one line, but the rank icon is a pasted
+    # image, not text - measure each piece to find where the line as a whole
+    # should start, rather than centering the text alone and bolting an icon
+    # onto a fixed offset that would drift for every different tier word.
+    sub_y   = 74
+    prefix  = "Rank: "
+    suffix  = (f" ({result['overall_points']} pts)  ·  "
               f"Score {scoring.format_score(result['score_ms'])}"
-              f"  ·  {result['coverage']}/{result['total_tracks']} tracks",
-              fill=overall_color, font=fnt_sub, anchor="mt")
+              f"  ·  {result['coverage']}/{result['total_tracks']} tracks")
+    icon    = icons.get(overall)
+    ICON_H  = 20
+    prefix_w = draw.textlength(prefix, font=fnt_sub)
+    tier_w   = draw.textlength(overall, font=fnt_sub)
+    suffix_w = draw.textlength(suffix, font=fnt_sub)
+    icon_span = (ICON_H + 6) if icon else 0
+    x = (W - (prefix_w + icon_span + tier_w + suffix_w)) / 2
+
+    draw.text((x, sub_y), prefix, fill=overall_color, font=fnt_sub, anchor="la")
+    x += prefix_w
+    if icon:
+        _paste_icon_at(img, icon, int(x), int(sub_y + 9), size=ICON_H)
+        x += ICON_H + 6
+    draw.text((x, sub_y), overall, fill=overall_color, font=fnt_sub, anchor="la")
+    x += tier_w
+    draw.text((x, sub_y), suffix, fill=overall_color, font=fnt_sub, anchor="la")
 
     COL_TRACK, COL_TIME = PAD, W - PAD - 150
     COL_RANK = W - PAD - 128     # left edge of the rank column, icon then text
