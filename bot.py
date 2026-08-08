@@ -1320,7 +1320,10 @@ def board_embed(track: str, ranked: list) -> discord.Embed:
     canonical = scoring.is_canonical_track(track)
     lines = []
     for place, (uid, b) in enumerate(ranked, 1):
-        medal = ["🥇", "🥈", "🥉"][place - 1] if place <= 3 else f"`#{place}`"
+        # Plain numbers for finishing position - a medal here would collide
+        # with the same medals meaning Street/Hustler/Elite in the tier text
+        # right next to it, e.g. a 🥈 could mean "2nd" or "Hustler".
+        position = f"`{place}.`"
         # Only the 13 scored tracks have tier thresholds - Rooftops and
         # customs get a time but no title, same as they get no overall score.
         # No tier text at all when a canonical time misses Street - "below
@@ -1333,7 +1336,7 @@ def board_embed(track: str, ranked: list) -> discord.Embed:
                 tier_txt = f"  ·  {scoring.TIER_EMOJI[tier]} {tier}"
         # Deliberately no run count: it would change the board on every race,
         # and this should only move when a time actually improves.
-        lines.append(f"{medal} <@{uid}> — `{ms_to_time(b['time_ms'])}`"
+        lines.append(f"{position} <@{uid}> — `{ms_to_time(b['time_ms'])}`"
                      f"  ·  best lap `{ms_to_time(b['best_lap_ms'])}`{tier_txt}")
 
     body = "\n".join(lines) if lines else "*no times yet*"
