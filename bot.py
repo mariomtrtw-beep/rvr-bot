@@ -1181,7 +1181,7 @@ def _tier_glow_background(tier: str, size: tuple, icon) -> "Image.Image":
 
 
 def generate_standings_image(rows: list[dict], icons: dict | None = None) -> io.BytesIO:
-    """rows: sorted ascending by score_ms, each with name/score_ms/overall_tier/coverage.
+    """rows: sorted by title then score_ms (see compute_all_driver_stats), each with name/score_ms/overall_tier/coverage.
     icons: optional {tier: PIL.Image} from get_tier_icons(), for servers with
     custom tier emoji uploaded - falls back to text-only for any tier missing.
 
@@ -1408,7 +1408,10 @@ async def compute_all_driver_stats(guild) -> list[dict]:
         name = member.display_name if member else f"user {uid}"
         out.append({"uid": uid, "name": name, "best_times": times,
                     **scoring.score_driver(times)})
-    out.sort(key=lambda r: r["score_ms"])
+    # Title outranks raw score - a driver with an actual title should never
+    # sit below someone Unranked just because their pooled time is lower.
+    # Within the same title, faster score still wins.
+    out.sort(key=lambda r: (-scoring.TIER_RANK.get(r["overall_tier"], 0), r["score_ms"]))
     return out
 
 
