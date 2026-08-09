@@ -132,37 +132,40 @@ async def on_command_error(ctx, error):
     traceback.print_exception(type(original), original, original.__traceback__)
 
 
-async def _check_single_instance() -> None:
-    """Best-effort guard against two processes holding this token at once -
-    exactly the "duplicate response" incident this was added after. Not a
-    real distributed lock, just enough to notice a stale/duplicate deploy
-    and refuse to run instead of silently answering every command twice.
+async def _acquire_instance_lock() -> bool:
+    """Try to claim the instance lock. True if we hold it.
+
+    Must be called - and must succeed - before bot.run() ever connects to
+    Discord. Checking after connecting (e.g. from on_ready) is too late:
+    discord.py starts dispatching message/command events the moment the
+    gateway connection opens, independently of whether on_ready has fired
+    yet, so a "loser" checked from on_ready can already have answered
+    several commands before it ever gets a chance to back off.
     """
     now = datetime.now(timezone.utc)
     doc = await state_col.find_one({"key": "instance_lock"})
     if doc and doc.get("owner") != INSTANCE_ID:
         age = (now - doc["heartbeat"]).total_seconds()
         if age < INSTANCE_LOCK_TTL:
-            print(f"⛔ Another bot instance ({doc['owner']}) is already running "
-                  f"(heartbeat {age:.0f}s ago) - exiting to avoid duplicate responses.")
-            await bot.close()
-            sys.exit(1)
+            return False
     await state_col.update_one(
         {"key": "instance_lock"},
         {"$set": {"key": "instance_lock", "owner": INSTANCE_ID, "heartbeat": now}},
         upsert=True)
+    return True
 
 
 async def _instance_heartbeat_loop() -> None:
     """Keep renewing the lease, and back off immediately if some other
-    process ever wins it out from under us."""
+    process ever wins it out from under us - e.g. this process hung long
+    enough for the lease to go stale and a genuine replacement started up.
+    """
     while True:
         await asyncio.sleep(INSTANCE_LOCK_TTL / 3)
         doc = await state_col.find_one({"key": "instance_lock"})
         if doc and doc.get("owner") != INSTANCE_ID:
             print("⛔ Lost the instance lock to another process - exiting.")
-            await bot.close()
-            sys.exit(1)
+            os._exit(1)                  # already connected - a clean exit can hang, this cannot
         await state_col.update_one(
             {"key": "instance_lock"},
             {"$set": {"heartbeat": datetime.now(timezone.utc)}})
@@ -175,7 +178,6 @@ _instance_loop_started = False
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
-    await _check_single_instance()
     global _instance_loop_started
     if not _instance_loop_started:
         _instance_loop_started = True
@@ -2933,4 +2935,23 @@ async def rvr_help(ctx):
     embed.add_field(name="!ratings",                     value="Show all player ratings", inline=False)
     await ctx.send(embed=embed)
 
-bot.run(TOKEN)
+async def main():
+    # One asyncio.run() for the whole process lifetime, not two separate
+    # ones - Motor binds its client to the event loop of its first
+    # operation, and reusing it across a closed-then-new loop (as a
+    # standalone asyncio.run() for the lock check, then another inside
+    # bot.run()) raises "attached to a different loop" errors.
+    if not await _acquire_instance_lock():
+        print("⛔ Another bot instance is already running with this token - "
+              "exiting before connecting to Discord, to avoid answering every command twice.")
+        sys.exit(1)
+    try:
+        await bot.start(TOKEN)
+    finally:
+        await bot.close()
+
+if __name__ == "__main__":
+    # Import-time side effects (connecting to Mongo, logging into Discord)
+    # made this module unimportable for testing without patching bot.run
+    # first - this guard is what actually should have prevented that.
+    asyncio.run(main())
