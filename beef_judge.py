@@ -1,27 +1,39 @@
 """
 AI judging for the beef battle: two burns in, one verdict out.
 
-Standalone on purpose: no Discord, no database. It talks to the Claude API and
-nothing else, so the whole judging path can be exercised from a script without
-a live server or a race night.
+Standalone on purpose: no Discord, no database. It talks to a model provider
+and nothing else, so the whole judging path can be exercised from a script
+without a live server or a race night.
+
+Provider is chosen by which key is present, so switching is an environment
+change rather than a code change:
+
+    GEMINI_API_KEY     -> Google Gemini      (has a free tier)
+    ANTHROPIC_API_KEY  -> Claude             (paid, sharper at this)
+    neither            -> no judging; the caller crowd-votes instead
+
+Gemini wins if both are set, on the assumption that the free one is the
+deliberate choice when someone has bothered to configure it.
 
 A verdict is never guaranteed. The model can decline to score a round, the key
-can be missing, the network can fail - all three surface the same way, as
-None. Callers are expected to read that as "fall back to crowd voting", not as
-an error: a duel must never die halfway because the judge had an opinion about
+can be missing, the network can fail - all surface the same way, as None.
+Callers are expected to read that as "fall back to crowd voting", not as an
+error: a duel must never die halfway because the judge had an opinion about
 one round.
 
-    python beef_judge.py "your mother" "no, YOUR mother"
+    python beef_judge.py "your mother" "no, YOUR mother" [persona]
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 from dataclasses import dataclass
 
-MODEL = "claude-haiku-4-5"   # cheapest of the current models - a duel is well under a cent
-MAX_TOKENS = 400             # a verdict is three short strings; this is already generous
+CLAUDE_MODEL = "claude-haiku-4-5"   # cheapest Claude - a duel is well under a cent
+GEMINI_MODEL = "gemini-3.6-flash"   # the free-tier workhorse
+MAX_TOKENS   = 400                  # a verdict is three short strings; already generous
 
 # Who's on the mic. The persona only changes the *voice* of the commentary -
 # the scoring rules below are the same whoever is calling it, so a funny
@@ -96,37 +108,104 @@ class Verdict:
     hype: str
 
 
+def provider() -> str | None:
+    """Which judge is configured: "gemini", "claude", or None.
+
+    Whichever key is present wins - no separate provider setting to keep in
+    sync with the keys, which is the usual way this kind of thing ends up
+    misconfigured.
+    """
+    if os.environ.get("GEMINI_API_KEY"):
+        return "gemini"
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return "claude"
+    return None
+
+
 def available() -> bool:
-    """Whether AI judging can even be attempted, without importing anything."""
-    return bool(os.environ.get("ANTHROPIC_API_KEY"))
+    """Whether AI judging can be attempted at all, without importing anything."""
+    return provider() is not None
 
 
 _client = None
+_client_kind = None
 
 
-def _get_client():
-    """One shared async client, built on first use.
+def _get_client(kind: str):
+    """One shared client per provider, built on first use.
 
-    Import is deferred so the bot still starts when `anthropic` is not
+    Imports are deferred so the bot still starts when neither SDK is
     installed - the beef command just runs crowd-voted instead.
     """
-    global _client
-    if _client is None:
-        from anthropic import AsyncAnthropic
-        _client = AsyncAnthropic()
+    global _client, _client_kind
+    if _client is None or _client_kind != kind:
+        if kind == "gemini":
+            from google import genai
+            _client = genai.Client()
+        else:
+            from anthropic import AsyncAnthropic
+            _client = AsyncAnthropic()
+        _client_kind = kind
     return _client
+
+
+async def _judge_claude(system: str, prompt: str) -> str | None:
+    """Raw JSON text from Claude, or None if it declined."""
+    client = _get_client("claude")
+    response = await client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=MAX_TOKENS,
+        system=system,
+        output_config={"format": {"type": "json_schema", "schema": SCHEMA}},
+        messages=[{"role": "user", "content": prompt}],
+    )
+    # A refusal is a successful response with no usable content, not an
+    # exception - checking stop_reason before touching content is what keeps
+    # this from raising on the exact rounds it exists to handle.
+    if response.stop_reason == "refusal":
+        print("⚠️ beef judge declined this round - crowd voting instead", flush=True)
+        return None
+    return next(b.text for b in response.content if b.type == "text")
+
+
+async def _judge_gemini(system: str, prompt: str) -> str | None:
+    """Raw JSON text from Gemini.
+
+    The SDK is synchronous, so it runs in a worker thread rather than
+    blocking the bot's event loop for the length of the call - the same
+    treatment the coordinator's blocking HTTP gets.
+    """
+    client = _get_client("gemini")
+
+    def call():
+        # System guidance goes inline: `interactions.create` takes a single
+        # `input`, so the voice and the rules ride along with the burns
+        # instead of a separate system field.
+        interaction = client.interactions.create(
+            model=GEMINI_MODEL,
+            input=f"{system}\n\n---\n\n{prompt}",
+            response_format={
+                "type": "text",
+                "mime_type": "application/json",
+                "schema": SCHEMA,
+            },
+        )
+        return interaction.output_text
+
+    return await asyncio.to_thread(call)
 
 
 async def judge_round(name_a: str, burn_a: str, name_b: str, burn_b: str,
                       round_no: int = 1, persona: str | None = None) -> Verdict | None:
     """Score one exchange. None means "no verdict - use crowd voting instead".
 
-    Every failure mode collapses to None on purpose: no API key, the library
-    missing, a network error, or the model declining to score this particular
-    exchange. None of those should read differently to the caller, because the
-    response to all of them is the same.
+    Every failure mode collapses to None on purpose: no API key, the SDK
+    missing, a network error, a rate limit, or the model declining to score
+    this particular exchange. None of those should read differently to the
+    caller, because the response to all of them is the same.
     """
-    if not available():
+    kind = provider()
+    if kind is None:
         return None
 
     prompt = (
@@ -135,51 +214,43 @@ async def judge_round(name_a: str, burn_a: str, name_b: str, burn_b: str,
         f"Racer B ({name_b}) said:\n{burn_b}\n\n"
         f"Who won this round?"
     )
+    system = build_system(persona)
 
     try:
-        client = _get_client()
-        response = await client.messages.create(
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
-            system=build_system(persona),
-            output_config={"format": {"type": "json_schema", "schema": SCHEMA}},
-            messages=[{"role": "user", "content": prompt}],
-        )
+        if kind == "gemini":
+            text = await _judge_gemini(system, prompt)
+        else:
+            text = await _judge_claude(system, prompt)
     except Exception as e:
         # Falling back quietly is right for the battle, but silently is not:
         # a missing key, an old SDK and a rate limit all look identical from
         # Discord, so without this line there is no way to tell "the judge
         # declined" from "the judge was never reachable in the first place".
-        print(f"⚠️ beef judge unavailable ({e.__class__.__name__}: {e}) - crowd voting instead",
-              flush=True)
+        print(f"⚠️ beef judge ({kind}) unavailable ({e.__class__.__name__}: {e}) "
+              f"- crowd voting instead", flush=True)
         return None
 
-    # A refusal is a successful response with no usable content, not an
-    # exception - checking stop_reason before touching content is what keeps
-    # this from raising on the exact rounds it exists to handle.
-    if response.stop_reason == "refusal":
-        print("⚠️ beef judge declined this round - crowd voting instead", flush=True)
+    if text is None:
         return None
 
     import json
     try:
-        text = next(b.text for b in response.content if b.type == "text")
         data = json.loads(text)
         return Verdict(winner=data["winner"], verdict=data["verdict"], hype=data["hype"])
-    except (StopIteration, ValueError, KeyError) as e:
-        print(f"⚠️ beef judge sent something unparseable ({e.__class__.__name__}) "
-              f"- crowd voting instead", flush=True)
+    except (StopIteration, ValueError, KeyError, TypeError) as e:
+        print(f"⚠️ beef judge ({kind}) sent something unparseable "
+              f"({e.__class__.__name__}) - crowd voting instead", flush=True)
         return None
 
 
 if __name__ == "__main__":
-    import asyncio
-
     if len(sys.argv) < 3:
         sys.exit('usage: python beef_judge.py "<burn a>" "<burn b>" [persona]\n'
                  f'       personas: {", ".join(persona_names())}')
     if not available():
-        sys.exit("ANTHROPIC_API_KEY is not set - judging would fall back to crowd voting")
+        sys.exit("No GEMINI_API_KEY or ANTHROPIC_API_KEY set "
+                 "- judging would fall back to crowd voting")
+    print(f"[provider: {provider()}]")
 
     who = sys.argv[3] if len(sys.argv) > 3 else DEFAULT_PERSONA
     print(f"[persona: {who}]\n")

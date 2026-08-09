@@ -217,8 +217,9 @@ _instance_loop_started = False
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
-    print("🥩 beef judge: " + ("Claude enabled" if beef_judge.available()
-                               else "no ANTHROPIC_API_KEY - battles will be crowd-voted"),
+    print("🥩 beef judge: " + (f"{beef_judge.provider()} enabled" if beef_judge.available()
+                               else "no GEMINI_API_KEY / ANTHROPIC_API_KEY "
+                                    "- battles will be crowd-voted"),
           flush=True)
     global _instance_loop_started, _auto_session_loop_started
     if not _instance_loop_started:
