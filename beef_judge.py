@@ -45,10 +45,21 @@ CLAUDE_MODEL = "claude-haiku-4-5"   # cheapest Claude - a duel is well under a c
 # documented but 404s for newer API keys ("no longer available to new
 # users") - the docs and what a given account can actually call have drifted
 # apart, so prefer models from the generation that's still being onboarded.
+#
+# This list was cross-checked against the models actually visible in one
+# real account's AI Studio dropdown, not just the docs - the docs/account
+# mismatch is exactly what caused the last failure. "Lite" variants are
+# ordered before the full model since they're built for higher free-tier
+# volume. gemini-3-flash-preview is still in Preview status (per
+# ai.google.dev) even though AI Studio's dropdown didn't say so - lowest
+# confidence of the five, so it's last. If its real ID has since changed,
+# the 404-cascade fix means it just gets skipped, not a broken chain.
 GEMINI_MODELS = [
     "gemini-3.6-flash",        # primary - best quality, likely the one your quota was on
     "gemini-3.5-flash-lite",   # same generation, separate quota bucket
-    "gemini-3.1-flash-lite",   # a third bucket if both of the above are tapped
+    "gemini-3.1-flash-lite",   # a third bucket
+    "gemini-3.5-flash",        # full model, not lite - a fourth bucket
+    "gemini-3-flash-preview",  # least certain ID - still Preview status per docs
 ]
 MAX_TOKENS   = 400                  # a verdict is three short strings; already generous
 
