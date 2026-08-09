@@ -32,7 +32,19 @@ import sys
 from dataclasses import dataclass
 
 CLAUDE_MODEL = "claude-haiku-4-5"   # cheapest Claude - a duel is well under a cent
-GEMINI_MODEL = "gemini-3.6-flash"   # the free-tier workhorse
+
+# Free-tier quota is tracked per model, not per account - the "20 requests"
+# limit that bit us was specific to gemini-3.6-flash, not a whole-account cap.
+# Falling through to a different model on a rate limit gets a fresh bucket for
+# free, no wait required, unlike retrying the same exhausted model. Order is
+# best-quality first; "antigravity" is a coding agent product, not a text
+# model, and gemini-2.0-flash isn't in Google's current lineup - both are
+# excluded rather than guessed at. Verified against ai.google.dev, not memory.
+GEMINI_MODELS = [
+    "gemini-3.6-flash",        # primary - best quality, likely the one your quota was on
+    "gemini-2.5-flash-lite",   # separate family, separate quota bucket
+    "gemini-3.5-flash-lite",   # a third bucket if both of the above are tapped
+]
 MAX_TOKENS   = 400                  # a verdict is three short strings; already generous
 
 # Who's on the mic. The persona only changes the *voice* of the commentary -
@@ -214,7 +226,7 @@ async def _call_claude(system: str, prompt: str, schema: dict, max_tokens: int) 
     return next(b.text for b in response.content if b.type == "text")
 
 
-async def _call_gemini(system: str, prompt: str, schema: dict) -> str | None:
+async def _call_gemini(system: str, prompt: str, schema: dict, model: str) -> str | None:
     """Raw JSON text from Gemini.
 
     The SDK is synchronous, so it runs in a worker thread rather than
@@ -228,7 +240,7 @@ async def _call_gemini(system: str, prompt: str, schema: dict) -> str | None:
         # `input`, so the voice and the rules ride along with the burns
         # instead of a separate system field.
         interaction = client.interactions.create(
-            model=GEMINI_MODEL,
+            model=model,
             input=f"{system}\n\n---\n\n{prompt}",
             response_format={
                 "type": "text",
@@ -263,6 +275,31 @@ def _rate_limit_delay(exc: Exception) -> float | None:
     return min(delay, RATE_LIMIT_RETRY_CAP)
 
 
+async def _call_gemini_cascade(system: str, prompt: str, schema: dict,
+                               label: str) -> tuple[str | None, Exception | None]:
+    """Try each configured Gemini model in turn on a rate limit.
+
+    Quota is tracked per model, not per account - a 429 on gemini-3.6-flash
+    doesn't mean the account is out of requests, just that model's bucket is.
+    Switching models is a free retry with no wait, unlike retrying the same
+    exhausted bucket. Returns (text, None) on success, or (None, last error)
+    if every model in the list was rate-limited - the caller decides what to
+    do next, since only it knows whether a final wait-and-retry is worth it.
+    """
+    last_exc: Exception | None = None
+    for i, model in enumerate(GEMINI_MODELS):
+        try:
+            return await _call_gemini(system, prompt, schema, model), None
+        except Exception as e:
+            last_exc = e
+            if _rate_limit_delay(e) is None:
+                return None, e   # not a quota issue - another model won't help
+            if i < len(GEMINI_MODELS) - 1:
+                print(f"⏳ beef {label} (gemini/{model}) rate limited - "
+                      f"trying {GEMINI_MODELS[i + 1]} instead", flush=True)
+    return None, last_exc
+
+
 async def _call_provider(system: str, prompt: str, schema: dict, *, label: str,
                          fallback_msg: str) -> str | None:
     """Shared dispatch + error handling for both providers.
@@ -271,30 +308,46 @@ async def _call_provider(system: str, prompt: str, schema: dict, *, label: str,
     missing, a network error, a rate limit that doesn't clear, or the model
     declining. None of those should read differently to the caller - the
     response is the same either way, so a duel or a between-turns reaction
-    never breaks over it. A short-lived rate limit gets one retry first,
-    since those clear in seconds and a battle spans minutes anyway.
+    never breaks over it.
     """
     kind = provider()
     if kind is None:
         return None
 
+    if kind == "gemini":
+        text, exc = await _call_gemini_cascade(system, prompt, schema, label)
+        if text is not None:
+            return text
+        if exc is None:
+            return None
+        # Every model in the cascade was rate-limited - one last wait, using
+        # that model's own suggested delay, before giving up entirely.
+        delay = _rate_limit_delay(exc)
+        if delay is not None:
+            print(f"⏳ beef {label} (gemini) all models rate limited, "
+                  f"retrying {GEMINI_MODELS[-1]} in {delay:.0f}s", flush=True)
+            await asyncio.sleep(delay)
+            try:
+                return await _call_gemini(system, prompt, schema, GEMINI_MODELS[-1])
+            except Exception as e:
+                exc = e
+        print(f"⚠️ beef {label} (gemini) unavailable ({exc.__class__.__name__}: {exc}) "
+              f"- {fallback_msg}", flush=True)
+        return None
+
+    # Claude: one model, no free quota-bucket switch available - just one
+    # wait-and-retry on a rate limit, same as before.
     for attempt in range(2):
         try:
-            if kind == "gemini":
-                return await _call_gemini(system, prompt, schema)
-            else:
-                return await _call_claude(system, prompt, schema, MAX_TOKENS)
+            return await _call_claude(system, prompt, schema, MAX_TOKENS)
         except Exception as e:
             delay = _rate_limit_delay(e) if attempt == 0 else None
             if delay is not None:
-                print(f"⏳ beef {label} ({kind}) rate limited, retrying in {delay:.0f}s",
+                print(f"⏳ beef {label} (claude) rate limited, retrying in {delay:.0f}s",
                       flush=True)
                 await asyncio.sleep(delay)
                 continue
-            # Falling back quietly is right for the battle, but silently is
-            # not: a missing key, an old SDK and a rate limit that didn't
-            # clear all look identical from Discord otherwise.
-            print(f"⚠️ beef {label} ({kind}) unavailable ({e.__class__.__name__}: {e}) "
+            print(f"⚠️ beef {label} (claude) unavailable ({e.__class__.__name__}: {e}) "
                   f"- {fallback_msg}", flush=True)
             return None
 
