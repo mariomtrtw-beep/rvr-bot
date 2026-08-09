@@ -105,8 +105,16 @@ def fetch_session(session_id: str) -> dict | None:
 def races_from(session: dict) -> list[Race]:
     races = []
     for h in session.get("History") or []:
+        game_id = h.get("GameID")
+        if not game_id:
+            # GameID is the only dedup key store_races has - a race without
+            # one would look identical to any other GameID-less race to that
+            # dedup check, silently swallowing every one after the first
+            # instead of erroring. Loud and skipped beats quiet and wrong.
+            print(f"⚠️ coordinator sent a race with no GameID, skipping: {h!r}"[:500])
+            continue
         race = Race(
-            game_id     = h.get("GameID"),
+            game_id     = game_id,
             number      = h.get("Number", 0),
             track_dir   = h.get("TrackDir", ""),
             track       = h.get("TrackName", "?"),

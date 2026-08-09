@@ -1,11 +1,15 @@
 import discord
 from discord.ext import commands
 import os
+import random
 import re
 import io
 import asyncio
+import sys
 import traceback
-from datetime import datetime, timezone
+import urllib.error
+import uuid
+from datetime import datetime, timedelta, timezone
 from motor.motor_asyncio import AsyncIOMotorClient
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
@@ -56,6 +60,19 @@ intents.message_content = True
 intents.members = True
 
 bot     = commands.Bot(command_prefix="!", intents=intents)
+
+# Serialises anything that reads-then-writes a board or the standings post -
+# without it, two overlapping !fetch/!refresh/!standings calls (two people
+# at once, or a double-click) can both read the old state before either
+# writes, producing two Discord messages for the same track/standings.
+board_lock = asyncio.Lock()
+
+# Best-effort guard against two bot processes holding the same Discord token
+# at once (exactly the "duplicate response" incident this exists to catch).
+# Not a real distributed lock - just enough to notice and refuse to run
+# rather than silently answering every command twice.
+INSTANCE_ID       = uuid.uuid4().hex[:12]
+INSTANCE_LOCK_TTL = 60   # seconds - comfortably longer than the heartbeat interval
 
 def is_staff(member) -> bool:
     """True if the member is an admin (manage_guild) or has the moderator role."""
@@ -115,10 +132,55 @@ async def on_command_error(ctx, error):
     traceback.print_exception(type(original), original, original.__traceback__)
 
 
+async def _check_single_instance() -> None:
+    """Best-effort guard against two processes holding this token at once -
+    exactly the "duplicate response" incident this was added after. Not a
+    real distributed lock, just enough to notice a stale/duplicate deploy
+    and refuse to run instead of silently answering every command twice.
+    """
+    now = datetime.now(timezone.utc)
+    doc = await state_col.find_one({"key": "instance_lock"})
+    if doc and doc.get("owner") != INSTANCE_ID:
+        age = (now - doc["heartbeat"]).total_seconds()
+        if age < INSTANCE_LOCK_TTL:
+            print(f"⛔ Another bot instance ({doc['owner']}) is already running "
+                  f"(heartbeat {age:.0f}s ago) - exiting to avoid duplicate responses.")
+            await bot.close()
+            sys.exit(1)
+    await state_col.update_one(
+        {"key": "instance_lock"},
+        {"$set": {"key": "instance_lock", "owner": INSTANCE_ID, "heartbeat": now}},
+        upsert=True)
+
+
+async def _instance_heartbeat_loop() -> None:
+    """Keep renewing the lease, and back off immediately if some other
+    process ever wins it out from under us."""
+    while True:
+        await asyncio.sleep(INSTANCE_LOCK_TTL / 3)
+        doc = await state_col.find_one({"key": "instance_lock"})
+        if doc and doc.get("owner") != INSTANCE_ID:
+            print("⛔ Lost the instance lock to another process - exiting.")
+            await bot.close()
+            sys.exit(1)
+        await state_col.update_one(
+            {"key": "instance_lock"},
+            {"$set": {"heartbeat": datetime.now(timezone.utc)}})
+
+
+_instance_loop_started = False
+
+
 # ── Events ────────────────────────────────────────────────────────────────────
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
+    await _check_single_instance()
+    global _instance_loop_started
+    if not _instance_loop_started:
+        _instance_loop_started = True
+        asyncio.create_task(_instance_heartbeat_loop())
+
     # One name can only belong to one player
     await aliases_col.create_index("name_key", unique=True)
     await skips_col.create_index("name_key", unique=True)
@@ -1019,6 +1081,14 @@ async def store_races(session: dict, races: list) -> tuple[list, int]:
     for race in races:
         if race.finished_at is None:
             continue                      # still being played
+        if not race.game_id:
+            # races_from already filters these out - this is defense in depth
+            # against the exact failure mode that guard exists for: a
+            # GameID-less race matching every other GameID-less race in the
+            # upsert filter below and silently overwriting/skipping instead
+            # of storing.
+            print(f"⚠️ store_races: race with no game_id, skipping: {race.track!r}")
+            continue
 
         # Only the 13 scored tracks are tracked at all now - mutated in place
         # so the Mongo doc and the race object fetch_cmd reports from (and
@@ -1533,14 +1603,15 @@ async def refresh_standings_board(guild, rows: list[dict]) -> None:
 @bot.command(name="standings")
 async def standings_cmd(ctx):
     """Recompute and repost the overall standings image."""
-    async with ctx.typing():
-        events = await recompute_standings(ctx.guild)
-    if not await get_channel(ctx.guild, "leaderboard"):
-        await ctx.send("❌ No leaderboard channel set — `!setchannel leaderboard #channel`.")
-        return
-    for event in events:
-        await announce(ctx.guild, event)
-    await ctx.send("✅ Standings updated.")
+    async with board_lock:
+        async with ctx.typing():
+            events = await recompute_standings(ctx.guild)
+        if not await get_channel(ctx.guild, "leaderboard"):
+            await ctx.send("❌ No leaderboard channel set — `!setchannel leaderboard #channel`.")
+            return
+        for event in events:
+            await announce(ctx.guild, event)
+        await ctx.send("✅ Standings updated.")
 
 
 @bot.command(name="card")
@@ -1875,6 +1946,22 @@ def is_ours(session_name) -> bool:
     return SESSION_NAME.casefold() in (session_name or "").casefold()
 
 
+async def _call_coordinator(fn, *args, retries: int = 2, base_delay: float = 1.5):
+    """Run a blocking coordinator call with a couple of retries on transient
+    network failures, instead of surfacing a single hiccup straight to the
+    user as an error. A real 404 (session closed) is not transient - fn
+    already turns that into a plain None return, not an exception, so it is
+    never retried here.
+    """
+    for attempt in range(retries + 1):
+        try:
+            return await asyncio.to_thread(fn, *args)
+        except (urllib.error.URLError, TimeoutError, OSError):
+            if attempt == retries:
+                raise
+            await asyncio.sleep(base_delay * (2 ** attempt) + random.random())
+
+
 def live_sessions() -> list:
     """Current sessions from the coordinator's event stream (first frame)."""
     for frame in read_frames():
@@ -1928,7 +2015,21 @@ async def forget_session(session_id: str) -> None:
     await known_sessions_col.delete_one({"_id": session_id})
 
 
+KNOWN_SESSION_TTL_HOURS = 12   # RVGL lobbies run for hours, not days
+
+
 async def known_session_ids() -> list[str]:
+    """Every remembered id, minus ones stale enough to be certainly closed.
+
+    Without this, a private lobby armed once and never revisited sits in the
+    list forever, costing one extra coordinator probe on every bare !b3l/
+    !fetch until someone happens to hit its actual 404 and prune it by hand.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=KNOWN_SESSION_TTL_HOURS)
+    stale_ids = [doc["_id"] async for doc in
+                 known_sessions_col.find({"last_seen": {"$lt": cutoff}}, {"_id": 1})]
+    if stale_ids:
+        await known_sessions_col.delete_many({"_id": {"$in": stale_ids}})
     return [doc["_id"] async for doc in known_sessions_col.find({}, {"_id": 1})]
 
 
@@ -1956,7 +2057,7 @@ async def b3l_cmd(ctx, session_ref: str = ""):
         # just the last one armed.
         try:
             async with ctx.typing():
-                sessions = await asyncio.to_thread(live_sessions)
+                sessions = await _call_coordinator(live_sessions)
         except Exception as e:
             await ctx.send(f"❌ Could not reach the coordinator: "
                            f"`{e.__class__.__name__}`")
@@ -1974,7 +2075,7 @@ async def b3l_cmd(ctx, session_ref: str = ""):
             if kid in candidates:
                 continue
             try:
-                probed = await asyncio.to_thread(fetch_session, kid)
+                probed = await _call_coordinator(fetch_session, kid)
             except Exception:
                 continue
             if probed is None:
@@ -2015,7 +2116,7 @@ async def b3l_cmd(ctx, session_ref: str = ""):
     if session is None:
         async with ctx.typing():
             try:
-                session = await asyncio.to_thread(fetch_session, session_id)
+                session = await _call_coordinator(fetch_session, session_id)
             except Exception as e:
                 await ctx.send(f"❌ Could not read that session: `{e.__class__.__name__}`")
                 return
@@ -2083,26 +2184,27 @@ async def refresh_cmd(ctx):
     just tracks that happen to have results - a track nobody has raced yet
     still gets a board, saying so, in its proper place in the order.
     """
-    board_ch = await get_channel(ctx.guild, "times") or ctx.channel
-    # Only forget the fingerprint, not message_id/channel_id - refresh_board
-    # needs those to find and delete the old post itself. A full !resetseason
-    # is what wipes the id fields for a truly clean slate.
-    await boards_col.update_many({}, {"$unset": {"fingerprint": ""}})
-    tracks = [scoring.TRACK_DISPLAY[k] for k in scoring.CANONICAL_TRACK_KEYS]
-    async with ctx.typing():
-        lines, _ = await refresh_boards(board_ch, tracks)
-    await ctx.send(f"🔁 Rebuilt {len(lines)} board(s) in {board_ch.mention}.")
+    async with board_lock:
+        board_ch = await get_channel(ctx.guild, "times") or ctx.channel
+        # Only forget the fingerprint, not message_id/channel_id - refresh_board
+        # needs those to find and delete the old post itself. A full !resetseason
+        # is what wipes the id fields for a truly clean slate.
+        await boards_col.update_many({}, {"$unset": {"fingerprint": ""}})
+        tracks = [scoring.TRACK_DISPLAY[k] for k in scoring.CANONICAL_TRACK_KEYS]
+        async with ctx.typing():
+            lines, _ = await refresh_boards(board_ch, tracks)
+        await ctx.send(f"🔁 Rebuilt {len(lines)} board(s) in {board_ch.mention}.")
 
-    # !refresh means "put it up fresh" - forget the standings fingerprint too,
-    # or recompute_standings sees an unchanged score and skips reposting even
-    # when the image itself changed (e.g. a layout fix, not a new time).
-    await state_col.update_one({"key": "standings_board"}, {"$unset": {"fingerprint": ""}})
-    async with ctx.typing():
-        events = await recompute_standings(ctx.guild)
-    for event in events:
-        await announce(ctx.guild, event)
-    await ctx.send("✅ Standings reposted.")
-    await nudge_unlinked(ctx)
+        # !refresh means "put it up fresh" - forget the standings fingerprint too,
+        # or recompute_standings sees an unchanged score and skips reposting even
+        # when the image itself changed (e.g. a layout fix, not a new time).
+        await state_col.update_one({"key": "standings_board"}, {"$unset": {"fingerprint": ""}})
+        async with ctx.typing():
+            events = await recompute_standings(ctx.guild)
+        for event in events:
+            await announce(ctx.guild, event)
+        await ctx.send("✅ Standings reposted.")
+        await nudge_unlinked(ctx)
 
 
 async def _ingest_session(session_id: str) -> tuple[dict | None, list, list, int, str | None]:
@@ -2114,7 +2216,7 @@ async def _ingest_session(session_id: str) -> tuple[dict | None, list, list, int
     fetch-everything-live paths so storing and reporting stay in sync.
     """
     try:
-        session = await asyncio.to_thread(fetch_session, session_id)
+        session = await _call_coordinator(fetch_session, session_id)
     except Exception as e:
         return None, [], [], 0, f"could not reach the coordinator (`{e.__class__.__name__}`)"
     if session is None:
@@ -2152,7 +2254,7 @@ async def fetch_cmd(ctx, session_ref: str = ""):
         live_ids = []
         try:
             async with ctx.typing():
-                sessions = await asyncio.to_thread(live_sessions)
+                sessions = await _call_coordinator(live_sessions)
             live_ids = [s["id"] for s in sessions if is_ours(s.get("name")) and s.get("id")]
         except Exception:
             pass                      # coordinator hiccup - known private ids still apply below
@@ -2228,34 +2330,35 @@ async def _apply_fetch_results(ctx, fresh: list) -> None:
     whether `fresh` came from one session or several, it only ever needs
     applying once against the boards and standings.
     """
-    # Only tracks that actually gained a race, and only the people in them
-    raced_by_track: dict[str, set] = {}
-    for r in fresh:
-        if r.counted:
-            raced_by_track.setdefault(r.track, set()).update(
-                e.name_key for e in r.entries if e.counted)
+    async with board_lock:
+        # Only tracks that actually gained a race, and only the people in them
+        raced_by_track: dict[str, set] = {}
+        for r in fresh:
+            if r.counted:
+                raced_by_track.setdefault(r.track, set()).update(
+                    e.name_key for e in r.entries if e.counted)
 
-    board_ch = await get_channel(ctx.guild, "times") or ctx.channel
-    async with ctx.typing():
-        lines, events = await refresh_boards(board_ch, sorted(raced_by_track),
-                                             raced_by_track)
-    if lines:
-        await ctx.send("\n".join(lines))
-    if board_ch is ctx.channel and not await get_channel(ctx.guild, "times"):
-        await ctx.send("*(no times channel set — track boards are here. "
-                       "`!setchannel times #channel` to move them.)*")
+        board_ch = await get_channel(ctx.guild, "times") or ctx.channel
+        async with ctx.typing():
+            lines, events = await refresh_boards(board_ch, sorted(raced_by_track),
+                                                 raced_by_track)
+        if lines:
+            await ctx.send("\n".join(lines))
+        if board_ch is ctx.channel and not await get_channel(ctx.guild, "times"):
+            await ctx.send("*(no times channel set — track boards are here. "
+                           "`!setchannel times #channel` to move them.)*")
 
-    # Records and podium moves are news, straight to the activity feed.
-    # Import counts are bookkeeping and stay in the command channel.
-    for event in events:
-        await announce(ctx.guild, event)
+        # Records and podium moves are news, straight to the activity feed.
+        # Import counts are bookkeeping and stay in the command channel.
+        for event in events:
+            await announce(ctx.guild, event)
 
-    async with ctx.typing():
-        standings_events = await recompute_standings(ctx.guild)
-    for event in standings_events:
-        await announce(ctx.guild, event)
+        async with ctx.typing():
+            standings_events = await recompute_standings(ctx.guild)
+        for event in standings_events:
+            await announce(ctx.guild, event)
 
-    await nudge_unlinked(ctx)
+        await nudge_unlinked(ctx)
 
 
 async def _fetch_many(ctx, session_ids: list[str]) -> None:
