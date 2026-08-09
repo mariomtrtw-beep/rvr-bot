@@ -33,6 +33,7 @@ races_col    = db["races"]        # every race ingested, one doc per GameID
 boards_col   = db["track_boards"] # the posted message we edit per track
 state_col    = db["bot_state"]    # small key/value bits, e.g. the armed session
 driver_stats_col = db["driver_stats"]   # cached overall score/title per discord user
+known_sessions_col = db["known_sessions"] # private session ids we've been given before
 
 GATHER_CHANNEL   = "Gather"
 DEV_CHANNEL      = "development"
@@ -1903,11 +1904,32 @@ async def set_active_session(session: dict, uid: int) -> None:
                   "name": session.get("Name"), "armed_by": uid,
                   "armed_at": datetime.now(timezone.utc)}},
         upsert=True)
+    await remember_session(session.get("ID"), session.get("Name"))
 
 
 async def active_session_id() -> str | None:
     doc = await state_col.find_one({"key": "active_session"})
     return doc.get("session_id") if doc else None
+
+
+async def remember_session(session_id: str, name: str = "") -> None:
+    """A private session's id is never listed by the coordinator, so the only
+    way to find it again is to remember it from the first time we were given
+    it - by hand with !b3l/!fetch <id>. Public sessions get remembered too,
+    which is harmless - they are already found by the live listing either way.
+    """
+    await known_sessions_col.update_one(
+        {"_id": session_id},
+        {"$set": {"name": name, "last_seen": datetime.now(timezone.utc)}},
+        upsert=True)
+
+
+async def forget_session(session_id: str) -> None:
+    await known_sessions_col.delete_one({"_id": session_id})
+
+
+async def known_session_ids() -> list[str]:
+    return [doc["_id"] async for doc in known_sessions_col.find({}, {"_id": 1})]
 
 
 @bot.command(name="b3l")
@@ -2078,12 +2100,16 @@ async def _ingest_session(session_id: str) -> tuple[dict | None, list, list, int
     except Exception as e:
         return None, [], [], 0, f"could not reach the coordinator (`{e.__class__.__name__}`)"
     if session is None:
+        # Gone for good, not just quiet - the coordinator drops closed sessions
+        # instantly. No point remembering an id that will never resolve again.
+        await forget_session(session_id)
         return None, [], [], 0, "that session is gone — the coordinator drops them once they close"
     if not is_ours(session.get("Name")):
         return None, [], [], 0, f"**{session.get('Name')}** is not an {SESSION_NAME} session"
 
     races = apply_race_rules(races_from(session))
     fresh, already = await store_races(session, races)
+    await remember_session(session_id, session.get("Name"))
     return session, races, fresh, already, None
 
 
@@ -2091,11 +2117,12 @@ async def _ingest_session(session_id: str) -> tuple[dict | None, list, list, int
 async def fetch_cmd(ctx, session_ref: str = ""):
     """Pull a coordinator session's races in: !fetch [id or url]
 
-    With no id, pulls every live public RVRU session at once - not just the
-    one armed with !b3l - so several lobbies running in parallel all come in
-    with one command. Falls back to the armed session when none of the live
-    ones are public (a private lobby's id is never listed by the coordinator,
-    same reason !b3l needs one pasted in by hand for those).
+    With no id, pulls every live public RVRU session at once, plus every
+    private session it has ever been given the id for (via !b3l/!fetch <id>
+    previously) - a private lobby's id is never listed by the coordinator, so
+    remembering it the first time is the only way to find it again on later
+    fetches. A remembered id that has since closed for good is forgotten
+    automatically.
     """
     if session_ref:
         match = SESSION_ID_RE.search(session_ref)
@@ -2104,19 +2131,22 @@ async def fetch_cmd(ctx, session_ref: str = ""):
             return
         session_id = match.group(1)
     else:
-        usable = []
+        live_ids = []
         try:
             async with ctx.typing():
                 sessions = await asyncio.to_thread(live_sessions)
-            usable = [s for s in sessions if is_ours(s.get("name")) and s.get("id")]
+            live_ids = [s["id"] for s in sessions if is_ours(s.get("name")) and s.get("id")]
         except Exception:
-            pass                      # coordinator hiccup - fall through to the armed session
+            pass                      # coordinator hiccup - known private ids still apply below
 
-        if len(usable) > 1:
-            await _fetch_many(ctx, [s["id"] for s in usable])
+        known_ids = await known_session_ids()
+        all_ids = live_ids + [sid for sid in known_ids if sid not in live_ids]
+
+        if len(all_ids) > 1:
+            await _fetch_many(ctx, all_ids)
             return
 
-        session_id = usable[0]["id"] if usable else await active_session_id()
+        session_id = all_ids[0] if all_ids else await active_session_id()
         if not session_id:
             await ctx.send("❌ No session armed — run `!b3l` first, or `!fetch <id>`.")
             return
