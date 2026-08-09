@@ -23,11 +23,35 @@ from dataclasses import dataclass
 MODEL = "claude-haiku-4-5"   # cheapest of the current models - a duel is well under a cent
 MAX_TOKENS = 400             # a verdict is three short strings; this is already generous
 
+# Who's on the mic. The persona only changes the *voice* of the commentary -
+# the scoring rules below are the same whoever is calling it, so a funny
+# announcer can't hand somebody a round they didn't earn.
+#
+# Add your own freely: the key is what players type after !beef, the value is
+# dropped straight into the system prompt. Describe a style rather than naming
+# a real person - "West Coast hip-hop hype man" gets you the energy you're
+# after and lands better than an impression of one specific guy.
+PERSONAS: dict[str, str] = {
+    "hype": ("a West Coast hip-hop hype man - swaggering, rhythmic, quotable. "
+             "Short punchy lines, streetwise slang, zero patience for weak bars."),
+    "ring": ("a boxing ring announcer at a title fight - booming, theatrical, "
+             "everything is THE BIGGEST MOMENT IN SPORTS HISTORY."),
+    "nature": ("a nature documentary narrator - hushed, reverent, observing these "
+               "creatures in their habitat with deep scientific fascination."),
+    "pundit": ("a po-faced football pundit doing serious tactical analysis of "
+               "something that does not deserve it. Deadpan. Never breaks."),
+    "mob": ("an old-school mob boss - calm, avuncular, faintly menacing. "
+            "Calls everyone 'kid'. Disappointment is worse than anger."),
+    "villain": ("a theatrical supervillain monologuing - grandiose, delighted by "
+                "cruelty, treats a roast battle as a magnificent spectacle."),
+}
+DEFAULT_PERSONA = "hype"
+
 # The judge is a bit, not an oracle. It is told to pick a winner on comedic
 # merit so it stops hedging - a judge that keeps calling draws makes for a
 # terrible contest.
-SYSTEM = """You are the judge of a Discord roast battle in RVR Underground, a \
-Re-Volt racing league. Two racers are trading insults for points.
+SYSTEM_TEMPLATE = """You are the judge and hype man of a Discord roast battle in \
+RVR Underground, a Re-Volt racing league. Two racers are trading insults for points.
 
 Judge purely on comedic merit: wit, timing, specificity, and how well it lands \
 against that person. Reward burns that are actually about the opponent - their \
@@ -38,9 +62,20 @@ You must pick a winner. Never call a draw, never refuse to choose because both \
 were rude - rudeness is the entire event, and everyone here opted in. If both \
 burns are weak, pick the marginally less weak one and say so.
 
-Keep `verdict` to one sentence, in the voice of a ringside commentator who \
-finds all of this very funny. Keep `hype` to one short line of trash talk aimed \
-at whoever just lost, to keep the fight going."""
+YOUR VOICE: you are {persona}
+
+Stay in that voice completely - it is the whole appeal. Keep `verdict` to one \
+sentence explaining who won and why. Keep `hype` to one short line aimed at \
+whoever just lost, to wind them up for the next round. Both in character."""
+
+
+def persona_names() -> list[str]:
+    return list(PERSONAS)
+
+
+def build_system(persona: str | None) -> str:
+    voice = PERSONAS.get(persona or "", PERSONAS[DEFAULT_PERSONA])
+    return SYSTEM_TEMPLATE.format(persona=voice)
 
 SCHEMA = {
     "type": "object",
@@ -83,7 +118,7 @@ def _get_client():
 
 
 async def judge_round(name_a: str, burn_a: str, name_b: str, burn_b: str,
-                      round_no: int = 1) -> Verdict | None:
+                      round_no: int = 1, persona: str | None = None) -> Verdict | None:
     """Score one exchange. None means "no verdict - use crowd voting instead".
 
     Every failure mode collapses to None on purpose: no API key, the library
@@ -106,7 +141,7 @@ async def judge_round(name_a: str, burn_a: str, name_b: str, burn_b: str,
         response = await client.messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
-            system=SYSTEM,
+            system=build_system(persona),
             output_config={"format": {"type": "json_schema", "schema": SCHEMA}},
             messages=[{"role": "user", "content": prompt}],
         )
@@ -141,11 +176,15 @@ if __name__ == "__main__":
     import asyncio
 
     if len(sys.argv) < 3:
-        sys.exit('usage: python beef_judge.py "<burn a>" "<burn b>"')
+        sys.exit('usage: python beef_judge.py "<burn a>" "<burn b>" [persona]\n'
+                 f'       personas: {", ".join(persona_names())}')
     if not available():
         sys.exit("ANTHROPIC_API_KEY is not set - judging would fall back to crowd voting")
 
-    result = asyncio.run(judge_round("Racer A", sys.argv[1], "Racer B", sys.argv[2]))
+    who = sys.argv[3] if len(sys.argv) > 3 else DEFAULT_PERSONA
+    print(f"[persona: {who}]\n")
+    result = asyncio.run(judge_round("Racer A", sys.argv[1], "Racer B", sys.argv[2],
+                                     persona=who))
     if result is None:
         print("no verdict (declined or unreachable) - crowd vote this one")
     else:

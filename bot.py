@@ -3006,14 +3006,21 @@ async def _crowd_vote(ctx, a_member, a_burn, b_member, b_burn) -> int | None:
 
 
 @bot.command(name="beef")
-async def beef_cmd(ctx, member: discord.Member = None):
-    """Start a roast battle: !beef @someone
+async def beef_cmd(ctx, member: discord.Member = None, persona: str = ""):
+    """Start a roast battle: !beef @someone [persona]
 
     They have to accept first - nobody gets dragged into a public roast they
-    did not agree to.
+    did not agree to. The persona only changes who's on the mic, not the
+    scoring - see !personas.
     """
     if member is None:
-        await ctx.send("❌ Who with? `!beef @someone`")
+        await ctx.send("❌ Who with? `!beef @someone [persona]`\n"
+                       f"Personas: {', '.join(f'`{p}`' for p in beef_judge.persona_names())}")
+        return
+    persona = persona.lower().strip()
+    if persona and persona not in beef_judge.persona_names():
+        await ctx.send(f"❌ No such persona `{persona}`. Pick one of: "
+                       + ", ".join(f"`{p}`" for p in beef_judge.persona_names()))
         return
     if member.id == ctx.author.id:
         await ctx.send("❌ You cannot have beef with yourself. Seek help.")
@@ -3053,15 +3060,16 @@ async def beef_cmd(ctx, member: discord.Member = None):
 
     _active_beefs.add(ctx.channel.id)
     try:
-        await _run_beef(ctx, ctx.author, member)
+        await _run_beef(ctx, ctx.author, member, persona or beef_judge.DEFAULT_PERSONA)
     finally:
         _active_beefs.discard(ctx.channel.id)
 
 
-async def _run_beef(ctx, a_member, b_member) -> None:
+async def _run_beef(ctx, a_member, b_member, persona: str) -> None:
     """The battle itself, once both sides have agreed to it."""
+    on_mic = f"  ·  on the mic: **{persona}**" if beef_judge.available() else ""
     await ctx.send(f"🔔 **It's on.** {a_member.mention} vs {b_member.mention} — "
-                   f"{BEEF_ROUNDS} rounds. {a_member.mention} throws first.")
+                   f"{BEEF_ROUNDS} rounds. {a_member.mention} throws first.{on_mic}")
 
     score = [0, 0]
     for round_no in range(1, BEEF_ROUNDS + 1):
@@ -3078,7 +3086,8 @@ async def _run_beef(ctx, a_member, b_member) -> None:
 
         async with ctx.typing():
             verdict = await beef_judge.judge_round(
-                a_member.display_name, burn_a, b_member.display_name, burn_b, round_no)
+                a_member.display_name, burn_a, b_member.display_name, burn_b,
+                round_no, persona)
 
         if verdict is not None:
             winner_idx = 0 if verdict.winner == "A" else 1
@@ -3119,6 +3128,20 @@ async def _finish_beef(ctx, winner, loser, winner_rounds: int, loser_rounds: int
         f"👑 **{winner.mention} wins the beef {winner_rounds}–{loser_rounds}.**\n"
         f"Record: **{record['wins']}W–{record['losses']}L** · **{record['points']} pts**  ·  "
         f"`!beefboard` for the standings.")
+
+
+@bot.command(name="personas")
+async def personas_cmd(ctx):
+    """Who can be on the mic for a beef battle."""
+    embed = discord.Embed(
+        title="🎙️ Beef commentators",
+        description="`!beef @someone <persona>` — changes who calls the fight, "
+                    "not who wins it.",
+        color=0xff4444)
+    for key, voice in beef_judge.PERSONAS.items():
+        default = "  *(default)*" if key == beef_judge.DEFAULT_PERSONA else ""
+        embed.add_field(name=f"`{key}`{default}", value=voice, inline=False)
+    await ctx.send(embed=embed)
 
 
 @bot.command(name="beefboard")
@@ -3288,7 +3311,8 @@ async def rvr_help(ctx):
     embed.add_field(name="!standings",            value="Recompute and repost the overall standings image", inline=False)
     embed.add_field(name="!card [@player]",       value="Show a player's time and title on every track (defaults to you)", inline=False)
     embed.add_field(name="!whois <ingame name>",  value="Show which Discord user an in-game name belongs to", inline=False)
-    embed.add_field(name="!beef @someone",        value="Challenge someone to a 3-round roast battle (they have to accept)", inline=False)
+    embed.add_field(name="!beef @someone [persona]", value="Challenge someone to a 3-round roast battle (they have to accept)", inline=False)
+    embed.add_field(name="!personas",             value="Who can commentate a beef battle", inline=False)
     embed.add_field(name="!beefboard",            value="Roast battle standings", inline=False)
     embed.add_field(name="── Admin only ──",      value="\u200b", inline=False)
     embed.add_field(name="!setchannel <role> #chan", value="Set the leaderboard / times / activity / commands channel", inline=False)
