@@ -184,10 +184,13 @@ _instance_loop_started = False
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
-    global _instance_loop_started
+    global _instance_loop_started, _auto_session_loop_started
     if not _instance_loop_started:
         _instance_loop_started = True
         asyncio.create_task(_instance_heartbeat_loop())
+    if not _auto_session_loop_started:
+        _auto_session_loop_started = True
+        asyncio.create_task(_auto_session_loop())
 
     # One name can only belong to one player
     await aliases_col.create_index("name_key", unique=True)
@@ -2240,6 +2243,81 @@ async def _ingest_session(session_id: str) -> tuple[dict | None, list, list, int
     fresh, already = await store_races(session, races)
     await remember_session(session_id, session.get("Name"))
     return session, races, fresh, already, None
+
+
+AUTO_FETCH_INTERVAL = 30   # seconds - matches coordinator_ingest.py's own poll default
+
+
+async def _auto_session_loop() -> None:
+    """Runs for the bot's whole lifetime: keeps every live RVRU session's
+    results flowing in on its own (nobody has to remember !fetch), and
+    announces the moment one closes - a session 404s the instant it ends,
+    so noticing it just vanished from the live list is the only way to know.
+
+    Alongside !b3l/!fetch, not instead of them - this only ever adds
+    results and announcements; it never arms a session or changes what
+    those commands do.
+    """
+    await bot.wait_until_ready()
+    seen: dict[str, str] = {}   # session_id -> name, live as of the last tick
+
+    while not bot.is_closed():
+        await asyncio.sleep(AUTO_FETCH_INTERVAL)
+        guild = bot.guilds[0] if bot.guilds else None
+        if guild is None:
+            continue
+
+        try:
+            live = await _call_coordinator(live_sessions)
+            live_ids = {s["id"]: s.get("name", "?") for s in live
+                       if is_ours(s.get("name")) and s.get("id")}
+        except Exception:
+            continue   # coordinator hiccup - just try again next tick
+
+        all_ids = dict(live_ids)
+        for kid in await known_session_ids():
+            if kid in all_ids:
+                continue
+            try:
+                probed = await _call_coordinator(fetch_session, kid)
+            except Exception:
+                continue
+            if probed is None:
+                await forget_session(kid)
+            elif is_ours(probed.get("Name")):
+                all_ids[kid] = probed.get("Name", "?")
+
+        for sid, name in list(seen.items()):
+            if sid not in all_ids:
+                await announce(guild, f"🔒 **{name}** has closed.")
+                del seen[sid]
+        seen.update(all_ids)
+
+        all_fresh = []
+        for sid in all_ids:
+            _session, _races, fresh, _already, error = await _ingest_session(sid)
+            if error is None:
+                all_fresh.extend(fresh)
+        if not all_fresh:
+            continue
+
+        async with board_lock:
+            raced_by_track: dict[str, set] = {}
+            for r in all_fresh:
+                if r.counted:
+                    raced_by_track.setdefault(r.track, set()).update(
+                        e.name_key for e in r.entries if e.counted)
+            board_ch = await get_channel(guild, "times")
+            if board_ch:
+                _lines, events = await refresh_boards(board_ch, sorted(raced_by_track),
+                                                       raced_by_track)
+                for event in events:
+                    await announce(guild, event)
+            for event in await recompute_standings(guild):
+                await announce(guild, event)
+
+
+_auto_session_loop_started = False
 
 
 @bot.command(name="fetch")
