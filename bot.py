@@ -3066,6 +3066,21 @@ async def beef_cmd(ctx, member: discord.Member = None, persona: str = ""):
         _active_beefs.discard(ctx.channel.id)
 
 
+async def _react(ctx, name: str, burn: str, opponent: str, persona: str) -> None:
+    """Post an in-character reaction to one burn, right as it lands.
+
+    Purely flavor between turns - if the judge is unconfigured or declines,
+    react_to_burn already returns None and this just says nothing. A missing
+    reaction should never feel like a bug; the round still gets judged.
+    """
+    if not beef_judge.available():
+        return
+    async with ctx.typing():
+        reaction = await beef_judge.react_to_burn(name, burn, opponent, persona)
+    if reaction:
+        await ctx.send(f"🎙️ {reaction}")
+
+
 async def _run_beef(ctx, a_member, b_member, persona: str) -> None:
     """The battle itself, once both sides have agreed to it."""
     on_mic = f"  ·  on the mic: **{persona}**" if beef_judge.available() else ""
@@ -3079,11 +3094,14 @@ async def _run_beef(ctx, a_member, b_member, persona: str) -> None:
             await ctx.send(f"⏳ {a_member.mention} froze up. {b_member.mention} takes it by forfeit.")
             await _finish_beef(ctx, b_member, a_member, score[1], score[0])
             return
+        await _react(ctx, a_member.display_name, burn_a, b_member.display_name, persona)
+
         burn_b = await _collect_burn(ctx, b_member, round_no)
         if burn_b is None:
             await ctx.send(f"⏳ {b_member.mention} froze up. {a_member.mention} takes it by forfeit.")
             await _finish_beef(ctx, a_member, b_member, score[0], score[1])
             return
+        await _react(ctx, b_member.display_name, burn_b, a_member.display_name, persona)
 
         async with ctx.typing():
             verdict = await beef_judge.judge_round(

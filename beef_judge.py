@@ -72,13 +72,36 @@ anyone could have written. Punish low-effort ("you suck") and pure volume.
 
 You must pick a winner. Never call a draw, never refuse to choose because both \
 were rude - rudeness is the entire event, and everyone here opted in. If both \
-burns are weak, pick the marginally less weak one and say so.
+burns are weak, pick the marginally less weak one and say so in `verdict` - do \
+not sell a mediocre round as a great one. Most rounds are just okay; treat them \
+that way. Save real enthusiasm for a round where a burn actually earns it.
 
 YOUR VOICE: you are {persona}
 
 Stay in that voice completely - it is the whole appeal. Keep `verdict` to one \
-sentence explaining who won and why. Keep `hype` to one short line aimed at \
+sentence explaining who won and why - honestly, including when the answer is \
+"neither of these was very good." Keep `hype` to one short line aimed at \
 whoever just lost, to wind them up for the next round. Both in character."""
+
+# A separate, shorter call fired right after each individual burn lands -
+# not a verdict, just a live reaction, so the battle feels commentated turn
+# by turn instead of going quiet until the round is scored.
+REACT_TEMPLATE = """You are the commentator for a Discord roast battle in RVR \
+Underground, a Re-Volt racing league. {name} just threw a burn at {opponent} - \
+this is a quick reaction to that one line as it lands, not a verdict on the \
+round.
+
+Be a realistic commentator, not a hype machine. If the burn is genuinely \
+sharp - specific, well-timed, actually about {opponent} - get loud about it. \
+If it is flat, generic ("you suck"), or a swing that missed, say so plainly - \
+"that did not land" energy, not forced enthusiasm. Most burns are just okay; \
+react like most burns are just okay. Reserve real excitement for the ones \
+that actually earn it.
+
+YOUR VOICE: you are {persona}
+
+Stay in that voice completely. One short line only - this is a between-turns \
+reaction, not a speech."""
 
 
 def persona_names() -> list[str]:
@@ -89,6 +112,11 @@ def build_system(persona: str | None) -> str:
     voice = PERSONAS.get(persona or "", PERSONAS[DEFAULT_PERSONA])
     return SYSTEM_TEMPLATE.format(persona=voice)
 
+
+def build_react_system(persona: str | None, name: str, opponent: str) -> str:
+    voice = PERSONAS.get(persona or "", PERSONAS[DEFAULT_PERSONA])
+    return REACT_TEMPLATE.format(persona=voice, name=name, opponent=opponent)
+
 SCHEMA = {
     "type": "object",
     "properties": {
@@ -97,6 +125,16 @@ SCHEMA = {
         "hype":    {"type": "string", "description": "One short line of trash talk at the loser."},
     },
     "required": ["winner", "verdict", "hype"],
+    "additionalProperties": False,
+}
+
+REACT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "reaction": {"type": "string",
+                    "description": "One short in-character line reacting to this one burn."},
+    },
+    "required": ["reaction"],
     "additionalProperties": False,
 }
 
@@ -149,26 +187,26 @@ def _get_client(kind: str):
     return _client
 
 
-async def _judge_claude(system: str, prompt: str) -> str | None:
+async def _call_claude(system: str, prompt: str, schema: dict, max_tokens: int) -> str | None:
     """Raw JSON text from Claude, or None if it declined."""
     client = _get_client("claude")
     response = await client.messages.create(
         model=CLAUDE_MODEL,
-        max_tokens=MAX_TOKENS,
+        max_tokens=max_tokens,
         system=system,
-        output_config={"format": {"type": "json_schema", "schema": SCHEMA}},
+        output_config={"format": {"type": "json_schema", "schema": schema}},
         messages=[{"role": "user", "content": prompt}],
     )
     # A refusal is a successful response with no usable content, not an
     # exception - checking stop_reason before touching content is what keeps
-    # this from raising on the exact rounds it exists to handle.
+    # this from raising on the exact calls it exists to handle.
     if response.stop_reason == "refusal":
-        print("⚠️ beef judge declined this round - crowd voting instead", flush=True)
+        print("⚠️ beef judge (claude) declined this one - skipping", flush=True)
         return None
     return next(b.text for b in response.content if b.type == "text")
 
 
-async def _judge_gemini(system: str, prompt: str) -> str | None:
+async def _call_gemini(system: str, prompt: str, schema: dict) -> str | None:
     """Raw JSON text from Gemini.
 
     The SDK is synchronous, so it runs in a worker thread rather than
@@ -187,7 +225,7 @@ async def _judge_gemini(system: str, prompt: str) -> str | None:
             response_format={
                 "type": "text",
                 "mime_type": "application/json",
-                "schema": SCHEMA,
+                "schema": schema,
             },
         )
         return interaction.output_text
@@ -195,41 +233,47 @@ async def _judge_gemini(system: str, prompt: str) -> str | None:
     return await asyncio.to_thread(call)
 
 
-async def judge_round(name_a: str, burn_a: str, name_b: str, burn_b: str,
-                      round_no: int = 1, persona: str | None = None) -> Verdict | None:
-    """Score one exchange. None means "no verdict - use crowd voting instead".
+async def _call_provider(system: str, prompt: str, schema: dict, *, label: str,
+                         fallback_msg: str) -> str | None:
+    """Shared dispatch + error handling for both providers.
 
     Every failure mode collapses to None on purpose: no API key, the SDK
-    missing, a network error, a rate limit, or the model declining to score
-    this particular exchange. None of those should read differently to the
-    caller, because the response to all of them is the same.
+    missing, a network error, a rate limit, or the model declining. None of
+    those should read differently to the caller - the response is the same
+    either way, so a duel or a between-turns reaction never breaks over it.
     """
     kind = provider()
     if kind is None:
         return None
 
+    try:
+        if kind == "gemini":
+            text = await _call_gemini(system, prompt, schema)
+        else:
+            text = await _call_claude(system, prompt, schema, MAX_TOKENS)
+    except Exception as e:
+        # Falling back quietly is right for the battle, but silently is not:
+        # a missing key, an old SDK and a rate limit all look identical from
+        # Discord, so without this line there is no way to tell "declined"
+        # from "never reachable in the first place".
+        print(f"⚠️ beef {label} ({kind}) unavailable ({e.__class__.__name__}: {e}) "
+              f"- {fallback_msg}", flush=True)
+        return None
+
+    return text
+
+
+async def judge_round(name_a: str, burn_a: str, name_b: str, burn_b: str,
+                      round_no: int = 1, persona: str | None = None) -> Verdict | None:
+    """Score one exchange. None means "no verdict - use crowd voting instead"."""
     prompt = (
         f"Round {round_no} of a roast battle.\n\n"
         f"Racer A ({name_a}) said:\n{burn_a}\n\n"
         f"Racer B ({name_b}) said:\n{burn_b}\n\n"
         f"Who won this round?"
     )
-    system = build_system(persona)
-
-    try:
-        if kind == "gemini":
-            text = await _judge_gemini(system, prompt)
-        else:
-            text = await _judge_claude(system, prompt)
-    except Exception as e:
-        # Falling back quietly is right for the battle, but silently is not:
-        # a missing key, an old SDK and a rate limit all look identical from
-        # Discord, so without this line there is no way to tell "the judge
-        # declined" from "the judge was never reachable in the first place".
-        print(f"⚠️ beef judge ({kind}) unavailable ({e.__class__.__name__}: {e}) "
-              f"- crowd voting instead", flush=True)
-        return None
-
+    text = await _call_provider(build_system(persona), prompt, SCHEMA,
+                                label="judge", fallback_msg="crowd voting instead")
     if text is None:
         return None
 
@@ -237,9 +281,32 @@ async def judge_round(name_a: str, burn_a: str, name_b: str, burn_b: str,
     try:
         data = json.loads(text)
         return Verdict(winner=data["winner"], verdict=data["verdict"], hype=data["hype"])
-    except (StopIteration, ValueError, KeyError, TypeError) as e:
-        print(f"⚠️ beef judge ({kind}) sent something unparseable "
+    except (ValueError, KeyError, TypeError) as e:
+        print(f"⚠️ beef judge sent something unparseable "
               f"({e.__class__.__name__}) - crowd voting instead", flush=True)
+        return None
+
+
+async def react_to_burn(name: str, burn: str, opponent: str,
+                        persona: str | None = None) -> str | None:
+    """A quick in-character reaction to one burn, right as it lands.
+
+    Purely flavor - unlike judge_round, there is nothing downstream relying
+    on this succeeding. None just means say nothing for this turn, same as
+    if the feature were never enabled at all.
+    """
+    prompt = f"{name}'s burn, aimed at {opponent}:\n{burn}"
+    text = await _call_provider(build_react_system(persona, name, opponent), prompt,
+                                REACT_SCHEMA, label="reaction", fallback_msg="skipping")
+    if text is None:
+        return None
+
+    import json
+    try:
+        return json.loads(text)["reaction"]
+    except (ValueError, KeyError, TypeError) as e:
+        print(f"⚠️ beef reaction sent something unparseable "
+              f"({e.__class__.__name__}) - skipping", flush=True)
         return None
 
 
