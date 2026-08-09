@@ -110,13 +110,20 @@ async def judge_round(name_a: str, burn_a: str, name_b: str, burn_b: str,
             output_config={"format": {"type": "json_schema", "schema": SCHEMA}},
             messages=[{"role": "user", "content": prompt}],
         )
-    except Exception:
-        return None      # unreachable, unauthorised, rate limited - all the same to us
+    except Exception as e:
+        # Falling back quietly is right for the battle, but silently is not:
+        # a missing key, an old SDK and a rate limit all look identical from
+        # Discord, so without this line there is no way to tell "the judge
+        # declined" from "the judge was never reachable in the first place".
+        print(f"⚠️ beef judge unavailable ({e.__class__.__name__}: {e}) - crowd voting instead",
+              flush=True)
+        return None
 
     # A refusal is a successful response with no usable content, not an
     # exception - checking stop_reason before touching content is what keeps
     # this from raising on the exact rounds it exists to handle.
     if response.stop_reason == "refusal":
+        print("⚠️ beef judge declined this round - crowd voting instead", flush=True)
         return None
 
     import json
@@ -124,7 +131,9 @@ async def judge_round(name_a: str, burn_a: str, name_b: str, burn_b: str,
         text = next(b.text for b in response.content if b.type == "text")
         data = json.loads(text)
         return Verdict(winner=data["winner"], verdict=data["verdict"], hype=data["hype"])
-    except (StopIteration, ValueError, KeyError):
+    except (StopIteration, ValueError, KeyError) as e:
+        print(f"⚠️ beef judge sent something unparseable ({e.__class__.__name__}) "
+              f"- crowd voting instead", flush=True)
         return None
 
 
