@@ -1847,13 +1847,19 @@ def podium_events(track, ranked, old_bests, old_podium, new_podium,
 
 
 async def refresh_board(channel, track: str, raced: set | None = None,
-                        events: list | None = None) -> str:
+                        events: list | None = None, force: bool = False) -> str:
     """Create or edit this track's block. Returns a plain sentence about it.
 
     `raced` is the set of name keys that appear in the races just ingested. Only
     they can be announced as setting a best - somebody who did not play tonight
     must never be named, whatever the stored board happens to say. Anything worth
     posting to the activity feed is appended to `events`.
+
+    `force` reposts even when nothing changed - needed whenever some other
+    track's board is about to move to the bottom of the channel, so this one
+    moves down with it and the fixed 13-track order stays intact. Without it,
+    an unrelated board's repost would be the only thing appended, leaving
+    this one behind at its old position - exactly the bug this exists for.
     """
     events = events if events is not None else []
     ranked, waiting, excluded = await best_per_track(track)
@@ -1874,28 +1880,31 @@ async def refresh_board(channel, track: str, raced: set | None = None,
     new_podium  = [b["name_key"] for _uid, b in ranked[:3]]
 
     held = f"  ·  {len(waiting)} waiting on a link" if waiting else ""
+    changed = not (board and board.get("fingerprint") == fingerprint)
 
-    # Nothing changed - do not touch Discord at all. The board still exists
-    # (or gets created below) either way, even for a track nobody has raced -
-    # this is the fixed 13-track board, not a lazily-appearing one.
-    if board and board.get("fingerprint") == fingerprint:
+    # Nothing changed and nobody else forced a reorder - do not touch Discord
+    # at all. The board still exists (or gets created below) either way, even
+    # for a track nobody has raced - this is the fixed 13-track board, not a
+    # lazily-appearing one.
+    if not changed and not force:
         if empty:
             return f"⚪ **{track}** — no times posted yet"
         return f"➖ **{track}** — no change, nobody improved{held}"
 
-    # Work out what is worth announcing, before the board is overwritten
-    events.extend(podium_events(track, ranked, old_bests, old_podium, new_podium,
-                                had_board=bool(old_podium), raced=raced))
-
-    # Who actually got quicker, so the report can name them. Restricted to
-    # people who raced just now, and to boards we already had a baseline for -
-    # a brand new board has nothing to compare against, so nothing "improved".
+    # Work out what is worth announcing, before the board is overwritten -
+    # only for a real change, never for a force-only reorder repost.
     improved = []
-    if raced is not None and old_bests:
-        improved = [f"<@{uid}> `{ms_to_time(b['time_ms'])}`" for uid, b in ranked
-                    if b["name_key"] in raced
-                    and (b["name_key"] not in old_bests
-                         or b["time_ms"] < old_bests[b["name_key"]])]
+    if changed:
+        events.extend(podium_events(track, ranked, old_bests, old_podium, new_podium,
+                                    had_board=bool(old_podium), raced=raced))
+        # Who actually got quicker, so the report can name them. Restricted to
+        # people who raced just now, and to boards we already had a baseline
+        # for - a brand new board has nothing to compare against yet.
+        if raced is not None and old_bests:
+            improved = [f"<@{uid}> `{ms_to_time(b['time_ms'])}`" for uid, b in ranked
+                        if b["name_key"] in raced
+                        and (b["name_key"] not in old_bests
+                             or b["time_ms"] < old_bests[b["name_key"]])]
 
     async def save(extra: dict):
         await boards_col.update_one(
@@ -1918,6 +1927,8 @@ async def refresh_board(channel, track: str, raced: set | None = None,
 
     message = await channel.send(embed=embed)
     await save({"channel_id": channel.id, "message_id": message.id})
+    if not changed:
+        return f"↕️ **{track}** — reordered, no change"
     if was_update:
         note = ("🏆 new best: " + ", ".join(improved)) if improved else "updated"
         return f"✅ **{track}** — {note}{held}"
@@ -1926,8 +1937,8 @@ async def refresh_board(channel, track: str, raced: set | None = None,
     return f"🆕 **{track}** — board posted{held}"
 
 
-async def refresh_boards(channel, tracks, raced_by_track: dict | None = None
-                         ) -> tuple[list[str], list[str]]:
+async def refresh_boards(channel, tracks, raced_by_track: dict | None = None,
+                         force: bool = False) -> tuple[list[str], list[str]]:
     """Refresh several tracks. Returns (report lines, activity events).
 
     One track failing must not take the rest down with it, so each is caught
@@ -1938,7 +1949,7 @@ async def refresh_boards(channel, tracks, raced_by_track: dict | None = None
     for track in tracks:
         try:
             lines.append(await refresh_board(channel, track,
-                                             (raced_by_track or {}).get(track), events))
+                                             (raced_by_track or {}).get(track), events, force))
         except discord.Forbidden:
             lines.append(f"🚫 **{track}** — no permission to post in "
                          f"{channel.mention}")
@@ -2309,8 +2320,13 @@ async def _auto_session_loop() -> None:
                         e.name_key for e in r.entries if e.counted)
             board_ch = await get_channel(guild, "times")
             if board_ch:
-                _lines, events = await refresh_boards(board_ch, sorted(raced_by_track),
-                                                       raced_by_track)
+                # Every one of the 13, forced - not just the tracks that
+                # changed. Discord only ever appends, so reposting just the
+                # changed one would leave it stranded at the bottom, out of
+                # the fixed track order every other board is still sitting in.
+                all_tracks = [scoring.TRACK_DISPLAY[k] for k in scoring.CANONICAL_TRACK_KEYS]
+                _lines, events = await refresh_boards(board_ch, all_tracks,
+                                                       raced_by_track, force=True)
                 for event in events:
                     await announce(guild, event)
             for event in await recompute_standings(guild):
@@ -2426,11 +2442,21 @@ async def _apply_fetch_results(ctx, fresh: list) -> None:
                     e.name_key for e in r.entries if e.counted)
 
         board_ch = await get_channel(ctx.guild, "times") or ctx.channel
+        # Every one of the 13, forced - not just the tracks that changed.
+        # Discord only ever appends, so reposting just the changed one would
+        # leave it stranded at the bottom, out of the fixed track order
+        # every other board is still sitting in.
+        all_tracks = [scoring.TRACK_DISPLAY[k] for k in scoring.CANONICAL_TRACK_KEYS]
         async with ctx.typing():
-            lines, events = await refresh_boards(board_ch, sorted(raced_by_track),
-                                                 raced_by_track)
-        if lines:
-            await ctx.send("\n".join(lines))
+            lines, events = await refresh_boards(board_ch, all_tracks,
+                                                 raced_by_track, force=bool(raced_by_track))
+        # The force-repost above touches every one of the 13 to keep them in
+        # order, but only the tracks that actually changed are worth telling
+        # the user about - a "reordered, no change" line per untouched track
+        # would drown the real news in noise.
+        worth_reporting = [l for l in lines if not l.startswith(("➖", "⚪", "↕️"))]
+        if worth_reporting:
+            await ctx.send("\n".join(worth_reporting))
         if board_ch is ctx.channel and not await get_channel(ctx.guild, "times"):
             await ctx.send("*(no times channel set — track boards are here. "
                            "`!setchannel times #channel` to move them.)*")
