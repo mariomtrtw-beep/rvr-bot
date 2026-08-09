@@ -1156,18 +1156,25 @@ async def link_map() -> dict:
 # ── Overall standings (13-track score and title) ────────────────────────────
 
 def _paste_icon_at(img, icon, left_x: int, mid_y: int, size: int = 26):
-    """Place `icon` at a fixed left x, vertically centered on `mid_y`.
+    """Place `icon` centered within a fixed [left_x, left_x+size) slot,
+    vertically centered on `mid_y`.
 
-    For a left-aligned icon+text column, where every row's icon should line up
-    at the same x regardless of how wide that row's tier word is.
+    Centered within the slot, not flush against left_x - aspect-preserving
+    thumbnail() means two icons with different width:height ratios (a wide
+    crest vs a round coin, say) end up different actual widths even at the
+    same `size`, so pasting both flush-left would still visibly drift
+    row to row despite using the same anchor. Centering in a fixed-width
+    slot keeps every tier's icon looking like one column regardless of its
+    own shape.
     """
     if icon is None:
         return
     if icon.width > size or icon.height > size:
         icon = icon.copy()
         icon.thumbnail((size, size), Image.LANCZOS)
+    icon_x = int(left_x + (size - icon.width) / 2)
     icon_y = int(mid_y - icon.height / 2)
-    img.paste(icon, (left_x, icon_y), icon)
+    img.paste(icon, (icon_x, icon_y), icon)
 
 
 def _load_tier_background(tier: str, size: tuple):
