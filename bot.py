@@ -145,7 +145,13 @@ async def _acquire_instance_lock() -> bool:
     now = datetime.now(timezone.utc)
     doc = await state_col.find_one({"key": "instance_lock"})
     if doc and doc.get("owner") != INSTANCE_ID:
-        age = (now - doc["heartbeat"]).total_seconds()
+        # Mongo/BSON round-trips datetimes without tzinfo, so a heartbeat read
+        # back is naive even though it was written as UTC - subtracting it
+        # from an aware `now` crashes on that mismatch, not on the logic.
+        heartbeat = doc["heartbeat"]
+        if heartbeat.tzinfo is None:
+            heartbeat = heartbeat.replace(tzinfo=timezone.utc)
+        age = (now - heartbeat).total_seconds()
         if age < INSTANCE_LOCK_TTL:
             return False
     await state_col.update_one(
