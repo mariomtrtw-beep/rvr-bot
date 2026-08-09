@@ -3156,8 +3156,15 @@ async def _run_beef(ctx, a_member, b_member, persona: str) -> None:
             if loser_pts:
                 # A wash between two good burns still needs the score to say
                 # so - otherwise "+1" for the loser looks like a typo instead
-                # of the point it's meant to be.
-                embed.set_footer(text=f"{loser.display_name}'s burn landed too (+{loser_pts})")
+                # of the point it's meant to be. A true tie (loser_pts ==
+                # winner_pts) is worth calling out differently from a flat
+                # +1 consolation - it's the loser matching the winner blow
+                # for blow, not just landing a lesser hit.
+                if loser_pts == winner_pts:
+                    embed.set_footer(text=f"dead even - {loser.display_name} matched that "
+                                          f"blow for blow (+{loser_pts})")
+                else:
+                    embed.set_footer(text=f"{loser.display_name}'s burn landed too (+{loser_pts})")
             await ctx.send(embed=embed)
         else:
             # No verdict from the judge - hand this exchange to the room

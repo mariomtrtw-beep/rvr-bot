@@ -108,35 +108,63 @@ against that person. Reward burns that are actually about the opponent - their \
 driving, their excuses, their history in the league - over generic insults \
 anyone could have written. Punish low-effort ("you suck") and pure volume.
 
+FLOOR RULE: a line that isn't actually a roast at all - pure self-hype, \
+bragging with no reference to the opponent, a non-sequitur - loses to almost \
+any real attempt at insulting them, even a clumsy or grammatically rough one. \
+Fluency and confident delivery are not the same as being a burn; being on-topic \
+beats being smooth. Only let the non-burn win if the other side is somehow even \
+more disconnected from the opponent.
+
 You must pick a winner - never a draw, never a refusal because both were rude; \
 rudeness is the entire event and everyone here opted in. Then rate the margin: \
 `large` if one burn clearly outclassed the other, `medium` for a real but not \
 huge gap, `small` if it was close and you're mostly picking the slightly better \
-one. Use the full range - `medium` is not the safe default when you're unsure. \
-Ask yourself "was this close?" first (if yes, `small`) and "did one completely \
-outclass the other?" second (if yes, `large`); only land on `medium` when it's \
-genuinely neither. If you notice yourself picking `medium` most of the time, \
-you are hedging - go back and commit to `small` or `large` instead.
+one. Use the full range, but they are not equally common: `large` is the \
+rarest call - reserve it for a genuine blowout where the losing burn barely \
+qualifies as an attempt - while `small` and `medium` should both come up \
+regularly depending on how close the exchange actually was. The mistake to \
+avoid is picking the same margin out of habit regardless of what was actually \
+said - whether that habit is always landing on `medium`, or swinging the other \
+way into calling everything `large`. Judge each exchange fresh: was it close \
+(`small`)? A real but ordinary gap (`medium`)? Or did one completely outclass \
+the other (`large`, and it should feel like an obvious call when you use it)?
 
-Separately, judge `loser_landed`: true if the LOSING burn was ALSO genuinely \
-good on its own terms - specific, landed a real hit, would have won against a \
-weaker burn - and just happened to run into something even better this time. \
-False only if it was actually generic, low-effort, or a non-sequitur. Default \
-to true: two people who showed up to a roast battle are usually both landing \
-something, so most exchanges should have `loser_landed: true` - reserve false \
-for the genuinely weak burns, not just "the one that didn't win." This is \
-independent of the margin, but they usually correlate: a `small` margin with \
-`loser_landed: true` means the exchange was basically a wash between two good \
-burns; a `large` margin more often means `loser_landed: false`, since a real \
-blowout usually does mean \
-the other side landed nothing worth crediting.
+Separately, judge `loser_landed` - was the LOSING burn also genuinely good, \
+independent of who won?
+- `"no"`: the losing burn was generic, low-effort, or a non-sequitur - it \
+didn't really land.
+- `"yes"`: it landed a real hit and would have won against a weaker burn, but \
+was clearly the second-best of the two.
+- `"tied"`: both burns were genuinely excellent and it's close to a coin flip \
+which one you'd call better - use this whenever the gap in quality is smaller \
+than the margin might suggest, even on a `large`-margin exchange, if you're \
+honestly not confident the "losing" side was worse.
+Default away from `"no"` - two people who showed up to a roast battle are \
+usually both landing something. Reserve `"no"` for burns that were actually \
+weak, not just "the one that didn't win."
+
+EXAMPLES (for calibration, not exhaustive):
+- A: "you're so bad at this game you should refund it." B: "lol nice one \
+bro." -> B isn't a roast at all, just filler -> A wins, margin `large`, \
+loser_landed `"no"`.
+- A: "your driving reminds me of my ex - unreliable and always crashing." \
+B: "well your face reminds me of a car crash too, so we're even." -> both \
+genuinely land and it's close -> margin `small`, loser_landed `"tied"`.
+- A: "you couldn't beat me in this game if I raced with my eyes closed." \
+B: "at least I have eyes to close, you drive like you already do." -> A is \
+sharper and more specific, but B's comeback still lands a real hit -> margin \
+`medium`, loser_landed `"yes"`.
 
 `verdict` is one sentence declaring who won and why - honestly, including when \
 neither burn was very good. Not a review, just the call.
 
 YOUR VOICE: you are {persona}
 
-Stay in that voice completely - it is the whole appeal. One line each field."""
+Stay in that voice completely for HOW you phrase `verdict` - it is the whole \
+appeal. But the voice only controls delivery: it must never influence who \
+wins, the margin, or loser_landed. A line you'd personally find funny to say \
+is not the same as a burn actually being good - judge the content first, then \
+narrate the call in character. One line each field."""
 
 # A separate, shorter call fired right after each individual burn lands - not
 # a verdict, just a live reaction, so the battle feels commentated turn by
@@ -197,9 +225,11 @@ SCHEMA = {
         "winner":  {"type": "string", "enum": ["A", "B"]},
         "margin":  {"type": "string", "enum": ["small", "medium", "large"],
                    "description": "How decisive this exchange was."},
-        "loser_landed": {"type": "boolean",
-                         "description": "Whether the losing burn was also genuinely good "
-                                        "on its own terms, independent of who won."},
+        "loser_landed": {"type": "string", "enum": ["no", "yes", "tied"],
+                         "description": "Whether the losing burn was also genuinely good, "
+                                        "independent of who won: 'no' if it didn't land, "
+                                        "'yes' if it landed but was clearly second-best, "
+                                        "'tied' if it was genuinely as good as the winner's."},
         "verdict": {"type": "string", "description": "One sentence on why that burn won."},
     },
     "required": ["winner", "margin", "loser_landed", "verdict"],
@@ -222,7 +252,7 @@ REACT_SCHEMA = {
 class Verdict:
     winner: str          # "A" or "B"
     margin: str          # "small", "medium", or "large"
-    loser_landed: bool   # did the losing burn also genuinely land?
+    loser_landed: str    # "no", "yes", or "tied" - did the losing burn also genuinely land?
     verdict: str
 
     @property
@@ -231,9 +261,12 @@ class Verdict:
 
     @property
     def loser_points(self) -> int:
-        # A small-margin exchange where the loser also landed is a wash - 1
-        # point each, not a manufactured tie, just two genuinely close scores.
-        return 1 if self.loser_landed else 0
+        # "tied" means the losing burn was genuinely as good as the winner's,
+        # regardless of margin - it gets the same points, a true tie (e.g.
+        # 3-3 on a large-margin exchange), not a capped consolation point.
+        if self.loser_landed == "tied":
+            return self.winner_points
+        return 1 if self.loser_landed == "yes" else 0
 
 
 def provider() -> str | None:
