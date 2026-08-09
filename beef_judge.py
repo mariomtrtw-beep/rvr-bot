@@ -112,16 +112,23 @@ You must pick a winner - never a draw, never a refusal because both were rude; \
 rudeness is the entire event and everyone here opted in. Then rate the margin: \
 `large` if one burn clearly outclassed the other, `medium` for a real but not \
 huge gap, `small` if it was close and you're mostly picking the slightly better \
-one. Most exchanges are `small` or `medium` - reserve `large` for a genuine \
-blowout, not just "the better joke."
+one. Use the full range - `medium` is not the safe default when you're unsure. \
+Ask yourself "was this close?" first (if yes, `small`) and "did one completely \
+outclass the other?" second (if yes, `large`); only land on `medium` when it's \
+genuinely neither. If you notice yourself picking `medium` most of the time, \
+you are hedging - go back and commit to `small` or `large` instead.
 
 Separately, judge `loser_landed`: true if the LOSING burn was ALSO genuinely \
 good on its own terms - specific, landed a real hit, would have won against a \
 weaker burn - and just happened to run into something even better this time. \
-False if it was generic, low-effort, or simply didn't land. This is independent \
-of the margin, but they usually correlate: a `small` margin with `loser_landed: \
-true` means the exchange was basically a wash between two good burns; a `large` \
-margin almost always means `loser_landed: false`, since a real blowout means \
+False only if it was actually generic, low-effort, or a non-sequitur. Default \
+to true: two people who showed up to a roast battle are usually both landing \
+something, so most exchanges should have `loser_landed: true` - reserve false \
+for the genuinely weak burns, not just "the one that didn't win." This is \
+independent of the margin, but they usually correlate: a `small` margin with \
+`loser_landed: true` means the exchange was basically a wash between two good \
+burns; a `large` margin more often means `loser_landed: false`, since a real \
+blowout usually does mean \
 the other side landed nothing worth crediting.
 
 `verdict` is one sentence declaring who won and why - honestly, including when \
