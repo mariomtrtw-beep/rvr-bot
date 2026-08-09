@@ -2102,8 +2102,9 @@ async def b3l_cmd(ctx, session_ref: str = ""):
             else:
                 other = f" ({len(sessions)} other session(s) up, ignored)" if sessions else ""
                 await ctx.send(f"❌ No **{SESSION_NAME}** session is live{other}. "
-                               f"Put `{SESSION_NAME}` in the lobby name, or arm a "
-                               f"private one with `!b3l <session id>`.")
+                               f"Host a session at <https://net.rv.gl> with "
+                               f"`{SESSION_NAME}` in the lobby name, then run this again "
+                               f"- or arm a private one with `!b3l <session id>`.")
             return
 
         if len(candidates) > 1:
