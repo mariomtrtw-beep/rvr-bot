@@ -1998,13 +1998,15 @@ async def b3l_cmd(ctx, session_ref: str = ""):
             return
 
         if len(candidates) > 1:
-            listing = "\n".join(
-                f"`{c['id']}` — **{c.get('name','?')}** "
-                + (f"({c['player_count']} players)" if c.get("player_count") is not None
-                   else "(private)")
-                for c in list(candidates.values())[:10])
-            await ctx.send(f"⚠️ {len(candidates)} **{SESSION_NAME}** sessions are live — "
-                           f"pick one with `!b3l <id>`:\n{listing}")
+            embed = discord.Embed(
+                title=f"⚠️ {len(candidates)} {SESSION_NAME} sessions are live",
+                description="Pick one with `!b3l <id>`:", color=0xffaa00)
+            for c in list(candidates.values())[:10]:
+                players = f"{c['player_count']} players" if c.get("player_count") is not None \
+                    else "private"
+                embed.add_field(name=c.get("name", "?"), value=f"`{c['id']}`  ·  {players}",
+                                inline=False)
+            await ctx.send(embed=embed)
             return
 
         listed = next(iter(candidates.values()))
