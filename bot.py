@@ -2065,9 +2065,38 @@ async def refresh_cmd(ctx):
     await nudge_unlinked(ctx)
 
 
+async def _ingest_session(session_id: str) -> tuple[dict | None, list, list, int, str | None]:
+    """Fetch one coordinator session and store any new races in it.
+
+    Returns (session, races, fresh, already, error) - error is a plain
+    sentence for the user, and session/races/fresh/already are only
+    meaningful when it is None. Shared by the single-session and
+    fetch-everything-live paths so storing and reporting stay in sync.
+    """
+    try:
+        session = await asyncio.to_thread(fetch_session, session_id)
+    except Exception as e:
+        return None, [], [], 0, f"could not reach the coordinator (`{e.__class__.__name__}`)"
+    if session is None:
+        return None, [], [], 0, "that session is gone — the coordinator drops them once they close"
+    if not is_ours(session.get("Name")):
+        return None, [], [], 0, f"**{session.get('Name')}** is not an {SESSION_NAME} session"
+
+    races = apply_race_rules(races_from(session))
+    fresh, already = await store_races(session, races)
+    return session, races, fresh, already, None
+
+
 @bot.command(name="fetch")
 async def fetch_cmd(ctx, session_ref: str = ""):
-    """Pull a coordinator session's races in: !fetch [id or url]"""
+    """Pull a coordinator session's races in: !fetch [id or url]
+
+    With no id, pulls every live public RVRU session at once - not just the
+    one armed with !b3l - so several lobbies running in parallel all come in
+    with one command. Falls back to the armed session when none of the live
+    ones are public (a private lobby's id is never listed by the coordinator,
+    same reason !b3l needs one pasted in by hand for those).
+    """
     if session_ref:
         match = SESSION_ID_RE.search(session_ref)
         if not match:
@@ -2075,27 +2104,28 @@ async def fetch_cmd(ctx, session_ref: str = ""):
             return
         session_id = match.group(1)
     else:
-        session_id = await active_session_id()
+        usable = []
+        try:
+            async with ctx.typing():
+                sessions = await asyncio.to_thread(live_sessions)
+            usable = [s for s in sessions if is_ours(s.get("name")) and s.get("id")]
+        except Exception:
+            pass                      # coordinator hiccup - fall through to the armed session
+
+        if len(usable) > 1:
+            await _fetch_many(ctx, [s["id"] for s in usable])
+            return
+
+        session_id = usable[0]["id"] if usable else await active_session_id()
         if not session_id:
             await ctx.send("❌ No session armed — run `!b3l` first, or `!fetch <id>`.")
             return
 
     async with ctx.typing():
-        try:
-            session = await asyncio.to_thread(fetch_session, session_id)
-        except Exception as e:
-            await ctx.send(f"❌ Could not reach the coordinator: `{e.__class__.__name__}`")
-            return
-    if session is None:
-        await ctx.send("❌ That session is gone — the coordinator drops them once they close.")
+        session, races, fresh, already, error = await _ingest_session(session_id)
+    if error:
+        await ctx.send(f"❌ {error}")
         return
-    if not is_ours(session.get("Name")):
-        await ctx.send(f"❌ **{session.get('Name')}** is not an {SESSION_NAME} session — "
-                       f"not importing someone else's races.")
-        return
-
-    races   = apply_race_rules(races_from(session))
-    fresh, already = await store_races(session, races)
     running = [r for r in races if r.finished_at is None]
 
     # Nothing new: say so once and touch nothing, so re-running is harmless
@@ -2140,7 +2170,16 @@ async def fetch_cmd(ctx, session_ref: str = ""):
         report.append(f"⚠️ **{track}** — not counted: " + ", ".join(who[:5]))
 
     await ctx.send("\n".join(report))
+    await _apply_fetch_results(ctx, fresh)
 
+
+async def _apply_fetch_results(ctx, fresh: list) -> None:
+    """Refresh boards/standings for a batch of freshly-stored races.
+
+    Shared tail for both the single-session and fetch-everything-live paths -
+    whether `fresh` came from one session or several, it only ever needs
+    applying once against the boards and standings.
+    """
     # Only tracks that actually gained a race, and only the people in them
     raced_by_track: dict[str, set] = {}
     for r in fresh:
@@ -2169,6 +2208,39 @@ async def fetch_cmd(ctx, session_ref: str = ""):
         await announce(ctx.guild, event)
 
     await nudge_unlinked(ctx)
+
+
+async def _fetch_many(ctx, session_ids: list[str]) -> None:
+    """!fetch with no id, when more than one live RVRU session was found.
+
+    Ingests every one of them, then applies the combined result to the
+    boards/standings once - a race from any of them landing on the same
+    track in the same batch is reported together, not as separate reposts.
+    """
+    all_fresh = []
+    lines = [f"📥 **{len(session_ids)} live RVRU sessions found** — pulling all of them:"]
+    async with ctx.typing():
+        for session_id in session_ids:
+            session, races, fresh, already, error = await _ingest_session(session_id)
+            if error:
+                lines.append(f"❌ `{session_id}` — {error}")
+                continue
+            running = [r for r in races if r.finished_at is None]
+            name = session.get("Name", "?")
+            if not fresh:
+                note = f"nothing new ({already} already in)" if already else "no finished races yet"
+                lines.append(f"➖ **{name}** — {note}")
+            else:
+                note = f"{len(fresh)} new race(s)" + (f", {already} already in" if already else "")
+                lines.append(f"✅ **{name}** — {note}")
+            for r in running:
+                lines.append(f"⏱️ *{r.track} still being raced in {name} — comes in next time.*")
+            all_fresh.extend(fresh)
+
+    await ctx.send("\n".join(lines))
+    if not all_fresh:
+        return
+    await _apply_fetch_results(ctx, all_fresh)
 
 
 
@@ -2688,7 +2760,7 @@ async def set_votes(ctx):
 async def rvr_help(ctx):
     embed = discord.Embed(title="🤖 RVR Bot Commands", color=discord.Color.blurple())
     embed.add_field(name="!b3l [session id]",     value="Find (or arm by id) the live RVRU session and check its settings", inline=False)
-    embed.add_field(name="!fetch [session id]",   value="Pull the armed session's races in - updates #times and the overall standings", inline=False)
+    embed.add_field(name="!fetch [session id]",   value="Pull races in - with no id, every live public RVRU session at once; updates #times and the overall standings", inline=False)
     embed.add_field(name="!standings",            value="Recompute and repost the overall standings image", inline=False)
     embed.add_field(name="!card [@player]",       value="Show a player's time and title on every track (defaults to you)", inline=False)
     embed.add_field(name="!whois <ingame name>",  value="Show which Discord user an in-game name belongs to", inline=False)
