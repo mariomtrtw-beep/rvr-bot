@@ -1734,6 +1734,14 @@ async def get_tier_icons(guild) -> dict[str, "Image.Image"]:
             try:
                 data = await emoji.read()
                 icon = Image.open(io.BytesIO(data)).convert("RGBA")
+                # Trim to the visible glyph before resizing - different emoji
+                # exports carry different amounts of transparent padding in
+                # their canvas, which otherwise left every tier's icon
+                # sitting at a slightly different offset even when pasted at
+                # the exact same x (e.g. Elite vs Hustler not lining up).
+                bbox = icon.split()[-1].getbbox()
+                if bbox:
+                    icon = icon.crop(bbox)
                 icon.thumbnail((40, 40), Image.LANCZOS)
                 _TIER_ICON_CACHE[key] = icon
             except Exception:
