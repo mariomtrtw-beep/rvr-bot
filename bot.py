@@ -5,6 +5,7 @@ import random
 import re
 import io
 import asyncio
+import signal
 import sys
 import traceback
 import urllib.error
@@ -67,12 +68,24 @@ bot     = commands.Bot(command_prefix="!", intents=intents)
 # writes, producing two Discord messages for the same track/standings.
 board_lock = asyncio.Lock()
 
-# Best-effort guard against two bot processes holding the same Discord token
-# at once (exactly the "duplicate response" incident this exists to catch).
-# Not a real distributed lock - just enough to notice and refuse to run
-# rather than silently answering every command twice.
-INSTANCE_ID       = uuid.uuid4().hex[:12]
-INSTANCE_LOCK_TTL = 60   # seconds - comfortably longer than the heartbeat interval
+# Guard against two bot processes holding the same Discord token at once
+# (the "every command answered twice" incident this exists to catch).
+#
+# Newest-wins, deliberately. The obvious design - first process to claim the
+# lock keeps it, newcomers refuse to start - is exactly wrong for a hosted
+# rolling deploy: the platform starts the replacement before stopping the
+# old one, so the replacement always loses and exits, the platform then
+# kills the old one anyway, and nothing is left running. Instead a starting
+# process always takes the lock, and the incumbent notices it lost the lease
+# on its next heartbeat and exits itself.
+INSTANCE_ID        = uuid.uuid4().hex[:12]
+INSTANCE_HEARTBEAT = 5    # seconds between lease renewals
+INSTANCE_LOCK_TTL  = 20   # a lease older than this means that process is gone
+# How long a newcomer waits for a live incumbent to notice and exit before
+# connecting to Discord. Must exceed the incumbent's heartbeat interval, or
+# both would be connected at once and answer commands twice - the whole
+# thing this guards against. Skipped entirely when there is no incumbent.
+INSTANCE_HANDOVER_WAIT = INSTANCE_HEARTBEAT * 2 + 2
 
 def is_staff(member) -> bool:
     """True if the member is an admin (manage_guild) or has the moderator role."""
@@ -132,46 +145,64 @@ async def on_command_error(ctx, error):
     traceback.print_exception(type(original), original, original.__traceback__)
 
 
-async def _acquire_instance_lock() -> bool:
-    """Try to claim the instance lock. True if we hold it.
+def _lease_age(doc: dict) -> float:
+    """Seconds since that lease was last renewed.
 
-    Must be called - and must succeed - before bot.run() ever connects to
-    Discord. Checking after connecting (e.g. from on_ready) is too late:
-    discord.py starts dispatching message/command events the moment the
-    gateway connection opens, independently of whether on_ready has fired
-    yet, so a "loser" checked from on_ready can already have answered
-    several commands before it ever gets a chance to back off.
+    Mongo/BSON round-trips datetimes without tzinfo, so a heartbeat read back
+    is naive even though it was written as UTC - subtracting it from an aware
+    `now` raises TypeError on the mismatch rather than on any real problem.
     """
-    now = datetime.now(timezone.utc)
+    heartbeat = doc.get("heartbeat")
+    if heartbeat is None:
+        return float("inf")
+    if heartbeat.tzinfo is None:
+        heartbeat = heartbeat.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - heartbeat).total_seconds()
+
+
+async def _claim_instance_lock() -> bool:
+    """Take the lock unconditionally. Returns whether a live incumbent held it.
+
+    Always succeeds - see the newest-wins note above. The return value only
+    says whether someone else was still actively renewing the lease, which
+    tells the caller whether it has to wait for that process to stand down
+    before connecting to Discord.
+
+    Must run before the gateway connection opens. discord.py dispatches
+    commands as soon as it connects, independently of on_ready, so a process
+    that defers this check until on_ready can already have answered several
+    commands by the time it runs.
+    """
     doc = await state_col.find_one({"key": "instance_lock"})
-    if doc and doc.get("owner") != INSTANCE_ID:
-        # Mongo/BSON round-trips datetimes without tzinfo, so a heartbeat read
-        # back is naive even though it was written as UTC - subtracting it
-        # from an aware `now` crashes on that mismatch, not on the logic.
-        heartbeat = doc["heartbeat"]
-        if heartbeat.tzinfo is None:
-            heartbeat = heartbeat.replace(tzinfo=timezone.utc)
-        age = (now - heartbeat).total_seconds()
-        if age < INSTANCE_LOCK_TTL:
-            return False
+    incumbent = bool(doc
+                     and doc.get("owner") not in (None, INSTANCE_ID)
+                     and _lease_age(doc) < INSTANCE_LOCK_TTL)
     await state_col.update_one(
         {"key": "instance_lock"},
-        {"$set": {"key": "instance_lock", "owner": INSTANCE_ID, "heartbeat": now}},
+        {"$set": {"key": "instance_lock", "owner": INSTANCE_ID,
+                  "heartbeat": datetime.now(timezone.utc)}},
         upsert=True)
-    return True
+    return incumbent
+
+
+async def _release_instance_lock() -> None:
+    """Drop the lease on a clean shutdown, so the next process starts at once
+    instead of waiting out the handover delay for a process already gone.
+    """
+    try:
+        await state_col.delete_one({"key": "instance_lock", "owner": INSTANCE_ID})
+    except Exception:
+        pass          # shutting down anyway; the lease expires on its own
 
 
 async def _instance_heartbeat_loop() -> None:
-    """Keep renewing the lease, and back off immediately if some other
-    process ever wins it out from under us - e.g. this process hung long
-    enough for the lease to go stale and a genuine replacement started up.
-    """
+    """Renew our lease, and stand down the moment a newer process takes it."""
     while True:
-        await asyncio.sleep(INSTANCE_LOCK_TTL / 3)
+        await asyncio.sleep(INSTANCE_HEARTBEAT)
         doc = await state_col.find_one({"key": "instance_lock"})
         if doc and doc.get("owner") != INSTANCE_ID:
-            print("⛔ Lost the instance lock to another process - exiting.")
-            os._exit(1)                  # already connected - a clean exit can hang, this cannot
+            print("⛔ A newer instance took over - exiting.", flush=True)
+            os._exit(0)      # already connected; a clean exit can hang, this cannot
         await state_col.update_one(
             {"key": "instance_lock"},
             {"$set": {"heartbeat": datetime.now(timezone.utc)}})
@@ -3067,14 +3098,50 @@ async def main():
     # operation, and reusing it across a closed-then-new loop (as a
     # standalone asyncio.run() for the lock check, then another inside
     # bot.run()) raises "attached to a different loop" errors.
-    if not await _acquire_instance_lock():
-        print("⛔ Another bot instance is already running with this token - "
-              "exiting before connecting to Discord, to avoid answering every command twice.")
-        sys.exit(1)
+    if await _claim_instance_lock():
+        # Someone was still live. We have taken the lease; give them until
+        # their next heartbeat to see that and exit, so we are never both
+        # connected and answering the same command twice.
+        print(f"⏳ Taking over from a running instance - waiting "
+              f"{INSTANCE_HANDOVER_WAIT}s for it to stand down.", flush=True)
+        await asyncio.sleep(INSTANCE_HANDOVER_WAIT)
+        doc = await state_col.find_one({"key": "instance_lock"})
+        if doc and doc.get("owner") != INSTANCE_ID:
+            # A third process started after us and took the lease in turn -
+            # it is the newest, so it wins and we step aside quietly.
+            print("⛔ A newer instance claimed the lock during handover - exiting.", flush=True)
+            return
+
+    _install_shutdown_handlers()
     try:
         await bot.start(TOKEN)
+    except asyncio.CancelledError:
+        pass                      # SIGTERM/SIGINT - shut down quietly
     finally:
+        await _release_instance_lock()
         await bot.close()
+
+
+def _install_shutdown_handlers() -> None:
+    """Cancel the running task on SIGTERM/SIGINT so main()'s finally block
+    runs and the lease is released.
+
+    Without this the platform's SIGTERM kills the process outright, leaving a
+    lease behind that the next deploy has to wait out for no reason. Best
+    effort: Windows has no SIGTERM and add_signal_handler is not implemented
+    there, so this quietly does nothing locally.
+    """
+    loop = asyncio.get_running_loop()
+    task = asyncio.current_task()
+    for sig in ("SIGTERM", "SIGINT"):
+        signum = getattr(signal, sig, None)
+        if signum is None:
+            continue
+        try:
+            loop.add_signal_handler(signum, task.cancel)
+        except (NotImplementedError, RuntimeError):
+            pass
+
 
 if __name__ == "__main__":
     # Import-time side effects (connecting to Mongo, logging into Discord)
