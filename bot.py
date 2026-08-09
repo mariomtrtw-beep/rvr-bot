@@ -3144,42 +3144,60 @@ async def _run_beef(ctx, a_member, b_member, persona: str) -> None:
 
         if verdict is not None:
             winner_idx = 0 if verdict.winner == "A" else 1
-            points = verdict.points
+            winner_pts, loser_pts = verdict.winner_points, verdict.loser_points
             winner = (a_member, b_member)[winner_idx]
+            loser = (a_member, b_member)[1 - winner_idx]
             embed = discord.Embed(
                 title=f"Exchange {exchange_no}: {winner.display_name} takes it "
-                      f"({verdict.margin}, +{points})",
+                      f"({verdict.margin}, +{winner_pts})",
                 description=verdict.verdict, color=0xffaa00)
             embed.add_field(name=f"{a_member.display_name}", value=burn_a[:1000], inline=False)
             embed.add_field(name=f"{b_member.display_name}", value=burn_b[:1000], inline=False)
+            if loser_pts:
+                # A wash between two good burns still needs the score to say
+                # so - otherwise "+1" for the loser looks like a typo instead
+                # of the point it's meant to be.
+                embed.set_footer(text=f"{loser.display_name}'s burn landed too (+{loser_pts})")
             await ctx.send(embed=embed)
         else:
             # No verdict from the judge - hand this exchange to the room
             # rather than dropping the whole battle. A crowd vote only ever
-            # decides who won, not by how much, so it's worth a flat point.
+            # decides who won, not by how much, so it's worth a flat point -
+            # no consolation point either, there's no "loser_landed" signal
+            # to base one on.
             winner_idx = await _crowd_vote(ctx, a_member, burn_a, b_member, burn_b)
             if winner_idx is None:
                 await ctx.send(f"🤝 Exchange {exchange_no} — dead even. Nobody scores.")
                 continue
-            points = 1
+            winner_pts, loser_pts = 1, 0
             winner = (a_member, b_member)[winner_idx]
+            loser = (a_member, b_member)[1 - winner_idx]
             await ctx.send(f"🏆 Exchange {exchange_no} — **{winner.display_name}** "
                            f"takes it on votes (+1).")
 
         loser_idx = 1 - winner_idx
-        loser = (a_member, b_member)[loser_idx]
 
         if sudden_death:
             await ctx.send("⚡ **Sudden death — that settles it.**")
-            await _finish_beef(ctx, winner, loser, score[winner_idx] + points, score[loser_idx])
+            await _finish_beef(ctx, winner, loser, score[winner_idx] + winner_pts,
+                              score[loser_idx] + loser_pts)
             return
 
-        score[winner_idx] += points
+        score[winner_idx] += winner_pts
+        score[loser_idx] += loser_pts
         await ctx.send(f"📊 {a_member.display_name} **{score[0]}** — **{score[1]}** "
                        f"{b_member.display_name}  *(first to {BEEF_TARGET_SCORE})*")
 
-        if score[winner_idx] >= BEEF_TARGET_SCORE:
-            await _finish_beef(ctx, winner, loser, score[winner_idx], score[loser_idx])
+        if score[winner_idx] >= BEEF_TARGET_SCORE or score[loser_idx] >= BEEF_TARGET_SCORE:
+            # Consolation points mean the trailing player's total can cross
+            # the target in the same exchange the "winner" doesn't - e.g. a
+            # loser at 6 getting +1 reaches 7 while the exchange winner only
+            # climbs from 4 to 5. The higher total wins the battle; the
+            # exchange winner is only a tiebreak if both land on the target.
+            if score[winner_idx] >= score[loser_idx]:
+                await _finish_beef(ctx, winner, loser, score[winner_idx], score[loser_idx])
+            else:
+                await _finish_beef(ctx, loser, winner, score[loser_idx], score[winner_idx])
             return
 
 

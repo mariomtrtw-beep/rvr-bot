@@ -115,6 +115,15 @@ huge gap, `small` if it was close and you're mostly picking the slightly better 
 one. Most exchanges are `small` or `medium` - reserve `large` for a genuine \
 blowout, not just "the better joke."
 
+Separately, judge `loser_landed`: true if the LOSING burn was ALSO genuinely \
+good on its own terms - specific, landed a real hit, would have won against a \
+weaker burn - and just happened to run into something even better this time. \
+False if it was generic, low-effort, or simply didn't land. This is independent \
+of the margin, but they usually correlate: a `small` margin with `loser_landed: \
+true` means the exchange was basically a wash between two good burns; a `large` \
+margin almost always means `loser_landed: false`, since a real blowout means \
+the other side landed nothing worth crediting.
+
 `verdict` is one sentence declaring who won and why - honestly, including when \
 neither burn was very good. Not a review, just the call.
 
@@ -181,9 +190,12 @@ SCHEMA = {
         "winner":  {"type": "string", "enum": ["A", "B"]},
         "margin":  {"type": "string", "enum": ["small", "medium", "large"],
                    "description": "How decisive this exchange was."},
+        "loser_landed": {"type": "boolean",
+                         "description": "Whether the losing burn was also genuinely good "
+                                        "on its own terms, independent of who won."},
         "verdict": {"type": "string", "description": "One sentence on why that burn won."},
     },
-    "required": ["winner", "margin", "verdict"],
+    "required": ["winner", "margin", "loser_landed", "verdict"],
     "additionalProperties": False,
 }
 
@@ -201,13 +213,20 @@ REACT_SCHEMA = {
 
 @dataclass
 class Verdict:
-    winner: str      # "A" or "B"
-    margin: str      # "small", "medium", or "large"
+    winner: str          # "A" or "B"
+    margin: str          # "small", "medium", or "large"
+    loser_landed: bool   # did the losing burn also genuinely land?
     verdict: str
 
     @property
-    def points(self) -> int:
+    def winner_points(self) -> int:
         return MARGIN_POINTS[self.margin]
+
+    @property
+    def loser_points(self) -> int:
+        # A small-margin exchange where the loser also landed is a wash - 1
+        # point each, not a manufactured tie, just two genuinely close scores.
+        return 1 if self.loser_landed else 0
 
 
 def provider() -> str | None:
@@ -443,7 +462,8 @@ async def judge_round(name_a: str, burn_a: str, name_b: str, burn_b: str,
     import json
     try:
         data = json.loads(text)
-        return Verdict(winner=data["winner"], margin=data["margin"], verdict=data["verdict"])
+        return Verdict(winner=data["winner"], margin=data["margin"],
+                       loser_landed=data["loser_landed"], verdict=data["verdict"])
     except (ValueError, KeyError, TypeError) as e:
         print(f"⚠️ beef judge sent something unparseable "
               f"({e.__class__.__name__}) - crowd voting instead", flush=True)
@@ -496,6 +516,8 @@ if __name__ == "__main__":
     if result is None:
         print("no verdict (declined or unreachable) - crowd vote this one")
     else:
-        print(f"winner:  {result.winner}")
-        print(f"margin:  {result.margin}  ({result.points} pt)")
+        print(f"winner:  {result.winner}  (+{result.winner_points})")
+        print(f"margin:  {result.margin}")
+        loser = "B" if result.winner == "A" else "A"
+        print(f"loser:   {loser}  landed={result.loser_landed}  (+{result.loser_points})")
         print(f"verdict: {result.verdict}")
