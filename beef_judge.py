@@ -39,11 +39,16 @@ CLAUDE_MODEL = "claude-haiku-4-5"   # cheapest Claude - a duel is well under a c
 # free, no wait required, unlike retrying the same exhausted model. Order is
 # best-quality first; "antigravity" is a coding agent product, not a text
 # model, and gemini-2.0-flash isn't in Google's current lineup - both are
-# excluded rather than guessed at. Verified against ai.google.dev, not memory.
+# excluded rather than guessed at.
+#
+# Stick to the 3.x ("Stable") family only. gemini-2.5-flash-lite is still
+# documented but 404s for newer API keys ("no longer available to new
+# users") - the docs and what a given account can actually call have drifted
+# apart, so prefer models from the generation that's still being onboarded.
 GEMINI_MODELS = [
     "gemini-3.6-flash",        # primary - best quality, likely the one your quota was on
-    "gemini-2.5-flash-lite",   # separate family, separate quota bucket
-    "gemini-3.5-flash-lite",   # a third bucket if both of the above are tapped
+    "gemini-3.5-flash-lite",   # same generation, separate quota bucket
+    "gemini-3.1-flash-lite",   # a third bucket if both of the above are tapped
 ]
 MAX_TOKENS   = 400                  # a verdict is three short strings; already generous
 
@@ -275,16 +280,35 @@ def _rate_limit_delay(exc: Exception) -> float | None:
     return min(delay, RATE_LIMIT_RETRY_CAP)
 
 
+def _model_unavailable(exc: Exception) -> bool:
+    """Whether this model itself is the problem - deprecated, removed, or
+    never available to this account - as distinct from a rate limit.
+
+    Docs and what a given API key can actually call drift apart (a model
+    still documented can 404 with "no longer available to new users"), so
+    this is judged from the error text rather than a maintained allowlist.
+    Treated the same as a rate limit for cascading to the next model - but
+    unlike a rate limit, never worth a wait-and-retry afterward, since a
+    removed model does not come back.
+    """
+    text = str(exc).lower()
+    return "404" in text or "not_found" in text or "not found" in text \
+        or "no longer available" in text
+
+
 async def _call_gemini_cascade(system: str, prompt: str, schema: dict,
                                label: str) -> tuple[str | None, Exception | None]:
-    """Try each configured Gemini model in turn on a rate limit.
+    """Try each configured Gemini model in turn on a rate limit or a model
+    that's gone.
 
     Quota is tracked per model, not per account - a 429 on gemini-3.6-flash
-    doesn't mean the account is out of requests, just that model's bucket is.
+    doesn't mean the account is out of requests, just that model's bucket is
+    - and a 404 means only that specific model is gone, not every model.
     Switching models is a free retry with no wait, unlike retrying the same
-    exhausted bucket. Returns (text, None) on success, or (None, last error)
-    if every model in the list was rate-limited - the caller decides what to
-    do next, since only it knows whether a final wait-and-retry is worth it.
+    exhausted or removed one. Returns (text, None) on success, or (None,
+    last error) if every model failed - the caller decides what to do next,
+    since only it knows whether a final wait-and-retry is worth it (it is
+    for a rate limit that might clear; it never is for a removed model).
     """
     last_exc: Exception | None = None
     for i, model in enumerate(GEMINI_MODELS):
@@ -292,10 +316,13 @@ async def _call_gemini_cascade(system: str, prompt: str, schema: dict,
             return await _call_gemini(system, prompt, schema, model), None
         except Exception as e:
             last_exc = e
-            if _rate_limit_delay(e) is None:
-                return None, e   # not a quota issue - another model won't help
+            rate_limited = _rate_limit_delay(e) is not None
+            unavailable = _model_unavailable(e)
+            if not rate_limited and not unavailable:
+                return None, e   # a real error - another model won't help
             if i < len(GEMINI_MODELS) - 1:
-                print(f"⏳ beef {label} (gemini/{model}) rate limited - "
+                reason = "rate limited" if rate_limited else "unavailable"
+                print(f"⏳ beef {label} (gemini/{model}) {reason} - "
                       f"trying {GEMINI_MODELS[i + 1]} instead", flush=True)
     return None, last_exc
 
