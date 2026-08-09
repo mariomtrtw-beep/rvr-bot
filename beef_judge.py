@@ -241,34 +241,62 @@ async def _call_gemini(system: str, prompt: str, schema: dict) -> str | None:
     return await asyncio.to_thread(call)
 
 
+RATE_LIMIT_RETRY_CAP = 20   # seconds - long enough to clear a short-lived free-tier
+                            # cap, short enough that a human mid-battle barely notices
+
+
+def _rate_limit_delay(exc: Exception) -> float | None:
+    """Seconds to wait before retrying, if this looks like a rate limit.
+
+    None means "not a rate limit, don't bother retrying" - a bad request or a
+    genuine outage retrying with the same input just fails the same way again.
+    Gemini's free tier states its own suggested delay in the error text
+    ("Please retry in 13.4s"); if that's present, honour it - otherwise fall
+    back to a fixed short wait for the generic "too many requests" case.
+    """
+    text = str(exc)
+    if "429" not in text and "quota" not in text.lower() and "rate" not in text.lower():
+        return None
+    import re
+    match = re.search(r"retry in ([\d.]+)s", text)
+    delay = float(match.group(1)) if match else 5.0
+    return min(delay, RATE_LIMIT_RETRY_CAP)
+
+
 async def _call_provider(system: str, prompt: str, schema: dict, *, label: str,
                          fallback_msg: str) -> str | None:
     """Shared dispatch + error handling for both providers.
 
     Every failure mode collapses to None on purpose: no API key, the SDK
-    missing, a network error, a rate limit, or the model declining. None of
-    those should read differently to the caller - the response is the same
-    either way, so a duel or a between-turns reaction never breaks over it.
+    missing, a network error, a rate limit that doesn't clear, or the model
+    declining. None of those should read differently to the caller - the
+    response is the same either way, so a duel or a between-turns reaction
+    never breaks over it. A short-lived rate limit gets one retry first,
+    since those clear in seconds and a battle spans minutes anyway.
     """
     kind = provider()
     if kind is None:
         return None
 
-    try:
-        if kind == "gemini":
-            text = await _call_gemini(system, prompt, schema)
-        else:
-            text = await _call_claude(system, prompt, schema, MAX_TOKENS)
-    except Exception as e:
-        # Falling back quietly is right for the battle, but silently is not:
-        # a missing key, an old SDK and a rate limit all look identical from
-        # Discord, so without this line there is no way to tell "declined"
-        # from "never reachable in the first place".
-        print(f"⚠️ beef {label} ({kind}) unavailable ({e.__class__.__name__}: {e}) "
-              f"- {fallback_msg}", flush=True)
-        return None
-
-    return text
+    for attempt in range(2):
+        try:
+            if kind == "gemini":
+                return await _call_gemini(system, prompt, schema)
+            else:
+                return await _call_claude(system, prompt, schema, MAX_TOKENS)
+        except Exception as e:
+            delay = _rate_limit_delay(e) if attempt == 0 else None
+            if delay is not None:
+                print(f"⏳ beef {label} ({kind}) rate limited, retrying in {delay:.0f}s",
+                      flush=True)
+                await asyncio.sleep(delay)
+                continue
+            # Falling back quietly is right for the battle, but silently is
+            # not: a missing key, an old SDK and a rate limit that didn't
+            # clear all look identical from Discord otherwise.
+            print(f"⚠️ beef {label} ({kind}) unavailable ({e.__class__.__name__}: {e}) "
+                  f"- {fallback_msg}", flush=True)
+            return None
 
 
 async def judge_round(name_a: str, burn_a: str, name_b: str, burn_b: str,
