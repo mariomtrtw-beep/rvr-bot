@@ -1939,7 +1939,8 @@ async def b3l_cmd(ctx, session_ref: str = ""):
     Private lobbies work in full - the coordinator simply never publishes their
     id, so it has to be pasted once from the host's browser URL.
     """
-    listed, session, already = {}, None, False
+    listed, session = {}, None
+    armed_before = await active_session_id()
 
     if session_ref:
         match = SESSION_ID_RE.search(session_ref)
@@ -1949,31 +1950,40 @@ async def b3l_cmd(ctx, session_ref: str = ""):
             return
         session_id = match.group(1)
     else:
-        # A session already armed and still up needs no rediscovery - asking for
-        # a private id again when one was given is just annoying.
-        armed = await active_session_id()
-        if armed:
+        # Always rediscover fresh rather than parroting back whatever is
+        # currently armed - arming several sessions one after another and
+        # then running a bare !b3l should show all of them, not silently
+        # just the last one armed.
+        try:
             async with ctx.typing():
-                try:
-                    session = await asyncio.to_thread(fetch_session, armed)
-                except Exception:
-                    session = None
-            if session is not None:
-                session_id, already = armed, True
-
-    if session is None and not session_ref:
-        async with ctx.typing():
-            try:
                 sessions = await asyncio.to_thread(live_sessions)
-            except Exception as e:
-                await ctx.send(f"❌ Could not reach the coordinator: "
-                               f"`{e.__class__.__name__}`")
-                return
+        except Exception as e:
+            await ctx.send(f"❌ Could not reach the coordinator: "
+                           f"`{e.__class__.__name__}`")
+            return
 
         ours   = [s for s in sessions if is_ours(s.get("name"))]
         usable = [s for s in ours if s.get("id")]
+        candidates = {s["id"]: s for s in usable}
 
-        if not usable:
+        # Private sessions never publish an id in the live listing, so the
+        # only way to know one is still up is to check every id we've been
+        # given before by hand - confirmed-dead ones are forgotten as we go,
+        # same self-pruning !fetch does.
+        for kid in await known_session_ids():
+            if kid in candidates:
+                continue
+            try:
+                probed = await asyncio.to_thread(fetch_session, kid)
+            except Exception:
+                continue
+            if probed is None:
+                await forget_session(kid)
+                continue
+            if is_ours(probed.get("Name")):
+                candidates[kid] = {"id": kid, "name": probed.get("Name"), "private": True}
+
+        if not candidates:
             if ours:
                 await ctx.send(
                     f"🔒 **{ours[0].get('name')}** is live but private, so the "
@@ -1987,14 +1997,17 @@ async def b3l_cmd(ctx, session_ref: str = ""):
                                f"private one with `!b3l <session id>`.")
             return
 
-        if len(usable) > 1:
-            listing = "\n".join(f"`{s['id']}` — **{s.get('name','?')}** "
-                                f"({s.get('player_count', '?')} players)" for s in usable[:10])
-            await ctx.send(f"⚠️ {len(usable)} **{SESSION_NAME}** sessions are live — "
+        if len(candidates) > 1:
+            listing = "\n".join(
+                f"`{c['id']}` — **{c.get('name','?')}** "
+                + (f"({c['player_count']} players)" if c.get("player_count") is not None
+                   else "(private)")
+                for c in list(candidates.values())[:10])
+            await ctx.send(f"⚠️ {len(candidates)} **{SESSION_NAME}** sessions are live — "
                            f"pick one with `!b3l <id>`:\n{listing}")
             return
 
-        listed = usable[0]
+        listed = next(iter(candidates.values()))
         session_id = listed["id"]
 
     if session is None:
@@ -2011,6 +2024,9 @@ async def b3l_cmd(ctx, session_ref: str = ""):
         await ctx.send(f"❌ **{session.get('Name')}** is not an {SESSION_NAME} session.")
         return
 
+    # "Already armed" just means this happens to be the same session that was
+    # already active - not news, whichever way we arrived at its id.
+    already = session_id == armed_before
     await set_active_session(session, ctx.author.id)
     problems = check_settings(session)
     host = listed.get("host") or "eu.rv.gl"
