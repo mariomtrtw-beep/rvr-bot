@@ -20,6 +20,7 @@ from coordinator_ingest import (ALLOW_PICKUPS, apply_rules as apply_race_rules,
                                 fetch_session, ms_to_time, races_from)
 from coordinator_probe import read_frames, sessions_from
 import rvr_scoring as scoring
+import beef_judge
 
 # ── Config ────────────────────────────────────────────────────────────────────
 TOKEN     = os.environ["DISCORD_TOKEN"]
@@ -39,6 +40,7 @@ boards_col   = db["track_boards"] # the posted message we edit per track
 state_col    = db["bot_state"]    # small key/value bits, e.g. the armed session
 driver_stats_col = db["driver_stats"]   # cached overall score/title per discord user
 known_sessions_col = db["known_sessions"] # private session ids we've been given before
+beef_col     = db["beef_stats"]   # roast battle record per discord user
 
 GATHER_CHANNEL   = "Gather"
 DEV_CHANNEL      = "development"
@@ -2923,6 +2925,215 @@ async def make_teams(ctx):
     await ctx.send(embed=embed)
 
 
+# ── Beef battles ──────────────────────────────────────────────────────────────
+BEEF_ACCEPT_SECONDS = 120    # how long a challenge sits waiting to be answered
+BEEF_TURN_SECONDS   = 180    # how long each racer has to type their burn
+BEEF_VOTE_SECONDS   = 45     # crowd-vote window, when the AI judge sits one out
+BEEF_ROUNDS         = 3
+BEEF_YES, BEEF_NO, BEEF_FIRE = "✅", "❌", "🔥"
+
+# One battle per channel at a time. Two overlapping duels in the same channel
+# would both be listening for the next message anyone types, and would steal
+# each other's burns.
+_active_beefs: set[int] = set()
+
+
+async def _beef_record(uid: int) -> dict:
+    return await beef_col.find_one({"uid": uid}) or {"uid": uid, "wins": 0, "losses": 0,
+                                                     "rounds_won": 0, "points": 0}
+
+
+async def _beef_save(uid: int, name: str, won: bool, rounds_won: int) -> None:
+    await beef_col.update_one(
+        {"uid": uid},
+        {"$set": {"uid": uid, "name": name},
+         "$inc": {"wins": int(won), "losses": int(not won),
+                  "rounds_won": rounds_won, "points": 3 if won else 0}},
+        upsert=True)
+
+
+async def _collect_burn(ctx, member, round_no: int):
+    """Wait for that member's next message in this channel. None if they stall."""
+    await ctx.send(f"🎤 Round {round_no} — {member.mention}, you're up. "
+                   f"({BEEF_TURN_SECONDS // 60} min)")
+
+    def is_their_turn(m):
+        return (m.author.id == member.id and m.channel.id == ctx.channel.id
+                and not m.content.startswith("!"))
+
+    try:
+        message = await bot.wait_for("message", check=is_their_turn,
+                                     timeout=BEEF_TURN_SECONDS)
+    except asyncio.TimeoutError:
+        return None
+    return message.content.strip()
+
+
+async def _crowd_vote(ctx, a_member, a_burn, b_member, b_burn) -> int | None:
+    """Fallback scoring: the room reacts, most 🔥 wins. None if nobody votes.
+
+    Used whenever the AI judge has no verdict - no API key, unreachable, or it
+    declined this particular exchange. The duel carries on either way, which is
+    the whole point of having a fallback at all.
+    """
+    msg_a = await ctx.send(f"🅰️ {a_member.mention}: {a_burn}")
+    msg_b = await ctx.send(f"🅱️ {b_member.mention}: {b_burn}")
+    for msg in (msg_a, msg_b):
+        await msg.add_reaction(BEEF_FIRE)
+    await ctx.send(f"🗳️ Crowd vote — {BEEF_VOTE_SECONDS}s. React {BEEF_FIRE} to the better burn. "
+                   f"*(the two of you don't get a vote)*")
+    await asyncio.sleep(BEEF_VOTE_SECONDS)
+
+    async def score(message_id) -> int:
+        message = await ctx.channel.fetch_message(message_id)
+        for reaction in message.reactions:
+            if str(reaction.emoji) != BEEF_FIRE:
+                continue
+            # Voting for yourself is not a vote, and neither is the bot's own
+            # seed reaction - both are filtered rather than subtracted, so a
+            # tie is a real tie.
+            return len([u async for u in reaction.users()
+                        if u.id not in (a_member.id, b_member.id, bot.user.id)])
+        return 0
+
+    votes_a, votes_b = await score(msg_a.id), await score(msg_b.id)
+    if votes_a == votes_b:
+        return None
+    return 0 if votes_a > votes_b else 1
+
+
+@bot.command(name="beef")
+async def beef_cmd(ctx, member: discord.Member = None):
+    """Start a roast battle: !beef @someone
+
+    They have to accept first - nobody gets dragged into a public roast they
+    did not agree to.
+    """
+    if member is None:
+        await ctx.send("❌ Who with? `!beef @someone`")
+        return
+    if member.id == ctx.author.id:
+        await ctx.send("❌ You cannot have beef with yourself. Seek help.")
+        return
+    if member.bot:
+        await ctx.send("❌ Pick someone who can type.")
+        return
+    if ctx.channel.id in _active_beefs:
+        await ctx.send("❌ There's already a beef running in this channel. Wait your turn.")
+        return
+
+    challenge = discord.Embed(
+        title="🥩 BEEF",
+        description=(f"{ctx.author.mention} wants smoke with {member.mention}.\n\n"
+                     f"**{BEEF_ROUNDS} rounds**, alternating. Funniest burn takes the round.\n"
+                     f"{member.mention} — {BEEF_YES} to accept, {BEEF_NO} to back down."),
+        color=0xff4444)
+    challenge.set_footer(text=f"expires in {BEEF_ACCEPT_SECONDS // 60} minutes")
+    prompt = await ctx.send(content=member.mention, embed=challenge)
+    await prompt.add_reaction(BEEF_YES)
+    await prompt.add_reaction(BEEF_NO)
+
+    def answered(reaction, user):
+        return (user.id == member.id and reaction.message.id == prompt.id
+                and str(reaction.emoji) in (BEEF_YES, BEEF_NO))
+
+    try:
+        reaction, _user = await bot.wait_for("reaction_add", check=answered,
+                                             timeout=BEEF_ACCEPT_SECONDS)
+    except asyncio.TimeoutError:
+        await ctx.send(f"💤 {member.mention} never answered. {ctx.author.mention} wins by default "
+                       f"— no points, no glory.")
+        return
+    if str(reaction.emoji) == BEEF_NO:
+        await ctx.send(f"🏳️ {member.mention} backed down. That's a choice.")
+        return
+
+    _active_beefs.add(ctx.channel.id)
+    try:
+        await _run_beef(ctx, ctx.author, member)
+    finally:
+        _active_beefs.discard(ctx.channel.id)
+
+
+async def _run_beef(ctx, a_member, b_member) -> None:
+    """The battle itself, once both sides have agreed to it."""
+    await ctx.send(f"🔔 **It's on.** {a_member.mention} vs {b_member.mention} — "
+                   f"{BEEF_ROUNDS} rounds. {a_member.mention} throws first.")
+
+    score = [0, 0]
+    for round_no in range(1, BEEF_ROUNDS + 1):
+        burn_a = await _collect_burn(ctx, a_member, round_no)
+        if burn_a is None:
+            await ctx.send(f"⏳ {a_member.mention} froze up. {b_member.mention} takes it by forfeit.")
+            await _finish_beef(ctx, b_member, a_member, score[1], score[0])
+            return
+        burn_b = await _collect_burn(ctx, b_member, round_no)
+        if burn_b is None:
+            await ctx.send(f"⏳ {b_member.mention} froze up. {a_member.mention} takes it by forfeit.")
+            await _finish_beef(ctx, a_member, b_member, score[0], score[1])
+            return
+
+        async with ctx.typing():
+            verdict = await beef_judge.judge_round(
+                a_member.display_name, burn_a, b_member.display_name, burn_b, round_no)
+
+        if verdict is not None:
+            winner_idx = 0 if verdict.winner == "A" else 1
+            winner = (a_member, b_member)[winner_idx]
+            embed = discord.Embed(title=f"Round {round_no}: {winner.display_name} takes it",
+                                  description=verdict.verdict, color=0xffaa00)
+            embed.add_field(name=f"{a_member.display_name}", value=burn_a[:1000], inline=False)
+            embed.add_field(name=f"{b_member.display_name}", value=burn_b[:1000], inline=False)
+            await ctx.send(embed=embed)
+            await ctx.send(f"🔥 {verdict.hype}")
+        else:
+            # No verdict from the judge - hand this round to the room rather
+            # than dropping the whole battle.
+            winner_idx = await _crowd_vote(ctx, a_member, burn_a, b_member, burn_b)
+            if winner_idx is None:
+                await ctx.send(f"🤝 Round {round_no} — dead even. Nobody scores.")
+                continue
+            winner = (a_member, b_member)[winner_idx]
+            await ctx.send(f"🏆 Round {round_no} — **{winner.display_name}** takes it on votes.")
+
+        score[winner_idx] += 1
+        await ctx.send(f"📊 {a_member.display_name} **{score[0]}** — **{score[1]}** {b_member.display_name}")
+
+    if score[0] == score[1]:
+        await ctx.send(f"🤝 **{score[0]}–{score[1]}. Dead even.** Nobody wins, everybody loses.")
+        return
+    if score[0] > score[1]:
+        await _finish_beef(ctx, a_member, b_member, score[0], score[1])
+    else:
+        await _finish_beef(ctx, b_member, a_member, score[1], score[0])
+
+
+async def _finish_beef(ctx, winner, loser, winner_rounds: int, loser_rounds: int) -> None:
+    await _beef_save(winner.id, winner.display_name, True, winner_rounds)
+    await _beef_save(loser.id, loser.display_name, False, loser_rounds)
+    record = await _beef_record(winner.id)
+    await ctx.send(
+        f"👑 **{winner.mention} wins the beef {winner_rounds}–{loser_rounds}.**\n"
+        f"Record: **{record['wins']}W–{record['losses']}L** · **{record['points']} pts**  ·  "
+        f"`!beefboard` for the standings.")
+
+
+@bot.command(name="beefboard")
+async def beefboard_cmd(ctx):
+    """Roast battle standings - entirely separate from the racing ranks."""
+    rows = await beef_col.find().sort("points", -1).to_list(20)
+    if not rows:
+        await ctx.send("Nobody has thrown hands yet. `!beef @someone`.")
+        return
+    lines = [f"`{i}.` <@{r['uid']}> — **{r.get('points', 0)} pts** "
+             f"({r.get('wins', 0)}W–{r.get('losses', 0)}L)"
+             for i, r in enumerate(rows, 1)]
+    embed = discord.Embed(title="🥩 Beef Standings", description="\n".join(lines),
+                          color=0xff4444)
+    embed.set_footer(text="3 points per battle won")
+    await ctx.send(embed=embed)
+
+
 @bot.command(name="predict")
 async def predict(ctx, member: discord.Member):
     import random
@@ -3074,6 +3285,8 @@ async def rvr_help(ctx):
     embed.add_field(name="!standings",            value="Recompute and repost the overall standings image", inline=False)
     embed.add_field(name="!card [@player]",       value="Show a player's time and title on every track (defaults to you)", inline=False)
     embed.add_field(name="!whois <ingame name>",  value="Show which Discord user an in-game name belongs to", inline=False)
+    embed.add_field(name="!beef @someone",        value="Challenge someone to a 3-round roast battle (they have to accept)", inline=False)
+    embed.add_field(name="!beefboard",            value="Roast battle standings", inline=False)
     embed.add_field(name="── Admin only ──",      value="\u200b", inline=False)
     embed.add_field(name="!setchannel <role> #chan", value="Set the leaderboard / times / activity / commands channel", inline=False)
     embed.add_field(name="!channels",                    value="Show which channel is used for what", inline=False)
