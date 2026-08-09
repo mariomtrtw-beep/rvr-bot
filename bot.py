@@ -2933,7 +2933,11 @@ async def make_teams(ctx):
 BEEF_ACCEPT_SECONDS = 120    # how long a challenge sits waiting to be answered
 BEEF_TURN_SECONDS   = 180    # how long each racer has to type their burn
 BEEF_VOTE_SECONDS   = 45     # crowd-vote window, when the AI judge sits one out
-BEEF_ROUNDS         = 3
+BEEF_TARGET_SCORE   = 7      # first to this many points wins
+# Past this many exchanges with nobody there yet, the next exchange wins the
+# whole battle outright, however close it is - guarantees an ending instead
+# of a fight that can grind on forever if the judge keeps calling close margins.
+BEEF_SUDDEN_DEATH_AFTER = 8
 BEEF_YES, BEEF_NO, BEEF_FIRE = "✅", "❌", "🔥"
 
 # One battle per channel at a time. Two overlapping duels in the same channel
@@ -2947,18 +2951,23 @@ async def _beef_record(uid: int) -> dict:
                                                      "rounds_won": 0, "points": 0}
 
 
-async def _beef_save(uid: int, name: str, won: bool, rounds_won: int) -> None:
+async def _beef_save(uid: int, name: str, won: bool, final_score: int) -> None:
+    """`final_score` is the burn-points total that player finished the battle
+    with (race-to-BEEF_TARGET_SCORE), not a count of exchanges won - stored
+    under the same `rounds_won` field the bo3 system used, since it's a
+    flavor stat either way and not worth a migration for.
+    """
     await beef_col.update_one(
         {"uid": uid},
         {"$set": {"uid": uid, "name": name},
          "$inc": {"wins": int(won), "losses": int(not won),
-                  "rounds_won": rounds_won, "points": 3 if won else 0}},
+                  "rounds_won": final_score, "points": 3 if won else 0}},
         upsert=True)
 
 
-async def _collect_burn(ctx, member, round_no: int):
+async def _collect_burn(ctx, member, exchange_no: int):
     """Wait for that member's next message in this channel. None if they stall."""
-    await ctx.send(f"🎤 Round {round_no} — {member.mention}, you're up. "
+    await ctx.send(f"🎤 Exchange {exchange_no} — {member.mention}, you're up. "
                    f"({BEEF_TURN_SECONDS // 60} min)")
 
     def is_their_turn(m):
@@ -3036,7 +3045,8 @@ async def beef_cmd(ctx, member: discord.Member = None, persona: str = ""):
     challenge = discord.Embed(
         title="🥩 BEEF",
         description=(f"{ctx.author.mention} wants smoke with {member.mention}.\n\n"
-                     f"**{BEEF_ROUNDS} rounds**, alternating. Funniest burn takes the round.\n"
+                     f"**First to {BEEF_TARGET_SCORE} points wins.** Alternating burns, judged "
+                     f"exchange by exchange - a landslide is worth more than a close call.\n"
                      f"{member.mention} — {BEEF_YES} to accept, {BEEF_NO} to back down."),
         color=0xff4444)
     challenge.set_footer(text=f"expires in {BEEF_ACCEPT_SECONDS // 60} minutes")
@@ -3066,85 +3076,119 @@ async def beef_cmd(ctx, member: discord.Member = None, persona: str = ""):
         _active_beefs.discard(ctx.channel.id)
 
 
-async def _react(ctx, name: str, burn: str, opponent: str, persona: str) -> None:
+async def _react(ctx, name: str, burn: str, opponent: str, persona: str,
+                 name_score: int, opponent_score: int) -> None:
     """Post an in-character reaction to one burn, right as it lands.
+
+    Passes the running score so the reaction is consistent with who's
+    actually ahead - not just blindly instigating whoever got hit regardless
+    of the state of the fight.
 
     Purely flavor between turns - if the judge is unconfigured or declines,
     react_to_burn already returns None and this just says nothing. A missing
-    reaction should never feel like a bug; the round still gets judged.
+    reaction should never feel like a bug; the exchange still gets judged.
     """
     if not beef_judge.available():
         return
     async with ctx.typing():
-        reaction = await beef_judge.react_to_burn(name, burn, opponent, persona)
+        reaction = await beef_judge.react_to_burn(
+            name, burn, opponent, BEEF_TARGET_SCORE, name_score, opponent_score, persona)
     if reaction:
         await ctx.send(f"🎙️ {reaction}")
 
 
 async def _run_beef(ctx, a_member, b_member, persona: str) -> None:
-    """The battle itself, once both sides have agreed to it."""
+    """The battle itself, once both sides have agreed to it.
+
+    Race to BEEF_TARGET_SCORE, alternating turns. Each exchange awards its
+    winner 1-3 points depending on the judge's called margin - a landslide
+    ends the fight faster than a string of narrow ones, which a fixed
+    best-of-3 could never do regardless of how lopsided a battle actually was.
+    """
     on_mic = f"  ·  on the mic: **{persona}**" if beef_judge.available() else ""
     await ctx.send(f"🔔 **It's on.** {a_member.mention} vs {b_member.mention} — "
-                   f"{BEEF_ROUNDS} rounds. {a_member.mention} throws first.{on_mic}")
+                   f"first to {BEEF_TARGET_SCORE}. {a_member.mention} throws first.{on_mic}")
 
     score = [0, 0]
-    for round_no in range(1, BEEF_ROUNDS + 1):
-        burn_a = await _collect_burn(ctx, a_member, round_no)
+    exchange_no = 0
+    warned_sudden_death = False
+    while True:
+        exchange_no += 1
+        sudden_death = exchange_no > BEEF_SUDDEN_DEATH_AFTER
+        if sudden_death and not warned_sudden_death:
+            warned_sudden_death = True
+            await ctx.send(f"⚡ **SUDDEN DEATH.** Still no one at {BEEF_TARGET_SCORE} after "
+                           f"{BEEF_SUDDEN_DEATH_AFTER} exchanges — next one wins the whole "
+                           f"battle, however close it is.")
+
+        burn_a = await _collect_burn(ctx, a_member, exchange_no)
         if burn_a is None:
             await ctx.send(f"⏳ {a_member.mention} froze up. {b_member.mention} takes it by forfeit.")
             await _finish_beef(ctx, b_member, a_member, score[1], score[0])
             return
-        await _react(ctx, a_member.display_name, burn_a, b_member.display_name, persona)
+        await _react(ctx, a_member.display_name, burn_a, b_member.display_name,
+                    persona, score[0], score[1])
 
-        burn_b = await _collect_burn(ctx, b_member, round_no)
+        burn_b = await _collect_burn(ctx, b_member, exchange_no)
         if burn_b is None:
             await ctx.send(f"⏳ {b_member.mention} froze up. {a_member.mention} takes it by forfeit.")
             await _finish_beef(ctx, a_member, b_member, score[0], score[1])
             return
-        await _react(ctx, b_member.display_name, burn_b, a_member.display_name, persona)
+        await _react(ctx, b_member.display_name, burn_b, a_member.display_name,
+                    persona, score[1], score[0])
 
         async with ctx.typing():
             verdict = await beef_judge.judge_round(
                 a_member.display_name, burn_a, b_member.display_name, burn_b,
-                round_no, persona)
+                exchange_no, persona)
 
         if verdict is not None:
             winner_idx = 0 if verdict.winner == "A" else 1
+            points = verdict.points
             winner = (a_member, b_member)[winner_idx]
-            embed = discord.Embed(title=f"Round {round_no}: {winner.display_name} takes it",
-                                  description=verdict.verdict, color=0xffaa00)
+            embed = discord.Embed(
+                title=f"Exchange {exchange_no}: {winner.display_name} takes it "
+                      f"({verdict.margin}, +{points})",
+                description=verdict.verdict, color=0xffaa00)
             embed.add_field(name=f"{a_member.display_name}", value=burn_a[:1000], inline=False)
             embed.add_field(name=f"{b_member.display_name}", value=burn_b[:1000], inline=False)
             await ctx.send(embed=embed)
-            await ctx.send(f"🔥 {verdict.hype}")
         else:
-            # No verdict from the judge - hand this round to the room rather
-            # than dropping the whole battle.
+            # No verdict from the judge - hand this exchange to the room
+            # rather than dropping the whole battle. A crowd vote only ever
+            # decides who won, not by how much, so it's worth a flat point.
             winner_idx = await _crowd_vote(ctx, a_member, burn_a, b_member, burn_b)
             if winner_idx is None:
-                await ctx.send(f"🤝 Round {round_no} — dead even. Nobody scores.")
+                await ctx.send(f"🤝 Exchange {exchange_no} — dead even. Nobody scores.")
                 continue
+            points = 1
             winner = (a_member, b_member)[winner_idx]
-            await ctx.send(f"🏆 Round {round_no} — **{winner.display_name}** takes it on votes.")
+            await ctx.send(f"🏆 Exchange {exchange_no} — **{winner.display_name}** "
+                           f"takes it on votes (+1).")
 
-        score[winner_idx] += 1
-        await ctx.send(f"📊 {a_member.display_name} **{score[0]}** — **{score[1]}** {b_member.display_name}")
+        loser_idx = 1 - winner_idx
+        loser = (a_member, b_member)[loser_idx]
 
-    if score[0] == score[1]:
-        await ctx.send(f"🤝 **{score[0]}–{score[1]}. Dead even.** Nobody wins, everybody loses.")
-        return
-    if score[0] > score[1]:
-        await _finish_beef(ctx, a_member, b_member, score[0], score[1])
-    else:
-        await _finish_beef(ctx, b_member, a_member, score[1], score[0])
+        if sudden_death:
+            await ctx.send("⚡ **Sudden death — that settles it.**")
+            await _finish_beef(ctx, winner, loser, score[winner_idx] + points, score[loser_idx])
+            return
+
+        score[winner_idx] += points
+        await ctx.send(f"📊 {a_member.display_name} **{score[0]}** — **{score[1]}** "
+                       f"{b_member.display_name}  *(first to {BEEF_TARGET_SCORE})*")
+
+        if score[winner_idx] >= BEEF_TARGET_SCORE:
+            await _finish_beef(ctx, winner, loser, score[winner_idx], score[loser_idx])
+            return
 
 
-async def _finish_beef(ctx, winner, loser, winner_rounds: int, loser_rounds: int) -> None:
-    await _beef_save(winner.id, winner.display_name, True, winner_rounds)
-    await _beef_save(loser.id, loser.display_name, False, loser_rounds)
+async def _finish_beef(ctx, winner, loser, winner_score: int, loser_score: int) -> None:
+    await _beef_save(winner.id, winner.display_name, True, winner_score)
+    await _beef_save(loser.id, loser.display_name, False, loser_score)
     record = await _beef_record(winner.id)
     await ctx.send(
-        f"👑 **{winner.mention} wins the beef {winner_rounds}–{loser_rounds}.**\n"
+        f"👑 **{winner.mention} wins the beef {winner_score}–{loser_score}.**\n"
         f"Record: **{record['wins']}W–{record['losses']}L** · **{record['points']} pts**  ·  "
         f"`!beefboard` for the standings.")
 

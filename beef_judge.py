@@ -87,52 +87,68 @@ PERSONAS: dict[str, str] = {
 }
 DEFAULT_PERSONA = "hype"
 
+# Margin -> points. The judge never sees the running score (see judge_round's
+# docstring for why) - it only ever says how decisively THIS exchange went,
+# and the caller converts that to points. Keeping "how good was this" and
+# "who's ahead overall" as two separate concerns is what lets the reaction
+# below talk about the scoreboard without the judge being tempted to skew a
+# call because someone's already behind.
+MARGIN_POINTS = {"small": 1, "medium": 2, "large": 3}
+
 # The judge is a bit, not an oracle. It is told to pick a winner on comedic
 # merit so it stops hedging - a judge that keeps calling draws makes for a
 # terrible contest.
-SYSTEM_TEMPLATE = """You are the judge and hype man of a Discord roast battle in \
-RVR Underground, a Re-Volt racing league. Two racers are trading insults for points.
+SYSTEM_TEMPLATE = """You are the judge of a Discord roast battle in RVR \
+Underground, a Re-Volt racing league. Two racers are trading insults; each \
+exchange you score awards the winner points toward a target, so a decisive \
+exchange should be worth more than a narrow one.
 
 Judge purely on comedic merit: wit, timing, specificity, and how well it lands \
 against that person. Reward burns that are actually about the opponent - their \
 driving, their excuses, their history in the league - over generic insults \
 anyone could have written. Punish low-effort ("you suck") and pure volume.
 
-You must pick a winner. Never call a draw, never refuse to choose because both \
-were rude - rudeness is the entire event, and everyone here opted in. If both \
-burns were weak, you can say so honestly in `verdict` while still picking one \
-- but don't turn `verdict` into a review. It's one sentence declaring who won \
-and why, in the voice of someone hyping a fight, not grading an essay.
+You must pick a winner - never a draw, never a refusal because both were rude; \
+rudeness is the entire event and everyone here opted in. Then rate the margin: \
+`large` if one burn clearly outclassed the other, `medium` for a real but not \
+huge gap, `small` if it was close and you're mostly picking the slightly better \
+one. Most exchanges are `small` or `medium` - reserve `large` for a genuine \
+blowout, not just "the better joke."
+
+`verdict` is one sentence declaring who won and why - honestly, including when \
+neither burn was very good. Not a review, just the call.
 
 YOUR VOICE: you are {persona}
 
-Stay in that voice completely - it is the whole appeal. Keep `hype` instigating, \
-not just mocking: get the loser fired up to come back harder, the way a crowd \
-does at a real battle - "you just gonna take that?" energy, not a dry insult. \
-Both fields in character, one line each."""
+Stay in that voice completely - it is the whole appeal. One line each field."""
 
-# A separate, shorter call fired right after each individual burn lands -
-# not a verdict, just a live reaction, so the battle feels commentated turn
-# by turn instead of going quiet until the round is scored.
+# A separate, shorter call fired right after each individual burn lands - not
+# a verdict, just a live reaction, so the battle feels commentated turn by
+# turn instead of going quiet until the exchange is scored.
 #
-# The job here is instigation, not book review. Nobody wants a judge grading
-# joke construction between every line - they want a hype man turning to
-# {opponent} and going "I wouldn't let that slide" to keep the beef hot.
+# This is the one call that DOES see the running score, specifically so it
+# can react to the actual state of the fight ("he's down 5, this better be
+# good") instead of blindly instigating whoever just got hit regardless of
+# who's winning - which was the whole problem with the old version.
 REACT_TEMPLATE = """You are the hype man for a Discord roast battle in RVR \
-Underground, a Re-Volt racing league. {name} just threw a burn at {opponent} - \
-this is your reaction to it as it lands, not a verdict on the round.
+Underground, a Re-Volt racing league. First to {target} points wins. {name} \
+just threw a burn at {opponent} - this is your reaction to it as it lands, \
+not a verdict.
 
-Your job is to stoke the fire between them, not grade the joke. When a burn \
-actually lands, don't just praise the wordplay - turn on {opponent} and get \
-in their head about it: tell them that was disrespectful, ask if they're \
-really about to let that slide, act like you can't believe they're just \
-standing there after that. Make {opponent} want to fire back immediately. \
-Real trash-talk energy, not a craft critique.
+Current score: {name} {name_score} - {opponent_score} {opponent}{score_note}
 
-Weak or lazy burns still get called out - "that's it? that's all you got?" - \
-but this should be the exception, not the norm: default to hyping the beef \
-itself and needling whoever just got hit, not auditing quality line by line. \
-Only go flat and unimpressed when a burn is genuinely nothing.
+React to the burn IN LIGHT OF that score - don't contradict it. If {name} is \
+already comfortably ahead, this is piling on, not an underdog fighting back. \
+If {name} is behind, frame it as clawing their way back in, not "taking the \
+lead." If it's close, treat it like it matters. Never tell someone to "watch \
+out" or "you're in trouble" if the scoreboard says they're winning easily - \
+that is the one thing you must always get right.
+
+Your job is to stoke the fire, not grade the joke - don't praise wordplay, \
+react to what it means for the fight. Weak or lazy burns can get called out \
+("that's it? that's all you got?") but that should be the exception, not the \
+norm - default to hyping the exchange and the stakes, not auditing quality \
+line by line.
 
 YOUR VOICE: you are {persona}
 
@@ -149,18 +165,25 @@ def build_system(persona: str | None) -> str:
     return SYSTEM_TEMPLATE.format(persona=voice)
 
 
-def build_react_system(persona: str | None, name: str, opponent: str) -> str:
+def build_react_system(persona: str | None, name: str, opponent: str, target: int,
+                       name_score: int, opponent_score: int) -> str:
     voice = PERSONAS.get(persona or "", PERSONAS[DEFAULT_PERSONA])
-    return REACT_TEMPLATE.format(persona=voice, name=name, opponent=opponent)
+    note = ""
+    if name_score == 0 and opponent_score == 0:
+        note = "  (first blood - nobody's on the board yet)"
+    return REACT_TEMPLATE.format(persona=voice, name=name, opponent=opponent,
+                                 target=target, name_score=name_score,
+                                 opponent_score=opponent_score, score_note=note)
 
 SCHEMA = {
     "type": "object",
     "properties": {
         "winner":  {"type": "string", "enum": ["A", "B"]},
+        "margin":  {"type": "string", "enum": ["small", "medium", "large"],
+                   "description": "How decisive this exchange was."},
         "verdict": {"type": "string", "description": "One sentence on why that burn won."},
-        "hype":    {"type": "string", "description": "One short line of trash talk at the loser."},
     },
-    "required": ["winner", "verdict", "hype"],
+    "required": ["winner", "margin", "verdict"],
     "additionalProperties": False,
 }
 
@@ -168,7 +191,8 @@ REACT_SCHEMA = {
     "type": "object",
     "properties": {
         "reaction": {"type": "string",
-                    "description": "One short in-character line reacting to this one burn."},
+                    "description": "One short in-character line reacting to this one burn "
+                                   "in light of the current score."},
     },
     "required": ["reaction"],
     "additionalProperties": False,
@@ -178,8 +202,12 @@ REACT_SCHEMA = {
 @dataclass
 class Verdict:
     winner: str      # "A" or "B"
+    margin: str      # "small", "medium", or "large"
     verdict: str
-    hype: str
+
+    @property
+    def points(self) -> int:
+        return MARGIN_POINTS[self.margin]
 
 
 def provider() -> str | None:
@@ -391,13 +419,21 @@ async def _call_provider(system: str, prompt: str, schema: dict, *, label: str,
 
 
 async def judge_round(name_a: str, burn_a: str, name_b: str, burn_b: str,
-                      round_no: int = 1, persona: str | None = None) -> Verdict | None:
-    """Score one exchange. None means "no verdict - use crowd voting instead"."""
+                      exchange_no: int = 1, persona: str | None = None) -> Verdict | None:
+    """Score one exchange: who won, and by how much. None means "no verdict -
+    use crowd voting instead".
+
+    Deliberately does not receive the running score - only react_to_burn does.
+    A judge that knew who was behind could start inflating margins to keep a
+    fight dramatic instead of scoring the burns on their own merit; keeping
+    "how good was this" and "who's ahead" as separate calls is what makes the
+    margin trustworthy enough to actually decide the battle.
+    """
     prompt = (
-        f"Round {round_no} of a roast battle.\n\n"
+        f"Exchange {exchange_no} of a roast battle.\n\n"
         f"Racer A ({name_a}) said:\n{burn_a}\n\n"
         f"Racer B ({name_b}) said:\n{burn_b}\n\n"
-        f"Who won this round?"
+        f"Who won, and by how much?"
     )
     text = await _call_provider(build_system(persona), prompt, SCHEMA,
                                 label="judge", fallback_msg="crowd voting instead")
@@ -407,24 +443,31 @@ async def judge_round(name_a: str, burn_a: str, name_b: str, burn_b: str,
     import json
     try:
         data = json.loads(text)
-        return Verdict(winner=data["winner"], verdict=data["verdict"], hype=data["hype"])
+        return Verdict(winner=data["winner"], margin=data["margin"], verdict=data["verdict"])
     except (ValueError, KeyError, TypeError) as e:
         print(f"⚠️ beef judge sent something unparseable "
               f"({e.__class__.__name__}) - crowd voting instead", flush=True)
         return None
 
 
-async def react_to_burn(name: str, burn: str, opponent: str,
+async def react_to_burn(name: str, burn: str, opponent: str, target: int,
+                        name_score: int, opponent_score: int,
                         persona: str | None = None) -> str | None:
     """A quick in-character reaction to one burn, right as it lands.
+
+    `name_score`/`opponent_score` are the running totals BEFORE this burn -
+    the scoreboard state the reaction should react in light of, not the
+    result of the exchange this burn is part of (that isn't scored yet).
 
     Purely flavor - unlike judge_round, there is nothing downstream relying
     on this succeeding. None just means say nothing for this turn, same as
     if the feature were never enabled at all.
     """
-    prompt = f"{name}'s burn, aimed at {opponent}:\n{burn}"
-    text = await _call_provider(build_react_system(persona, name, opponent), prompt,
-                                REACT_SCHEMA, label="reaction", fallback_msg="skipping")
+    prompt = (f"Score before this burn: {name} {name_score} - {opponent_score} {opponent}\n\n"
+             f"{name}'s burn, aimed at {opponent}:\n{burn}")
+    system = build_react_system(persona, name, opponent, target, name_score, opponent_score)
+    text = await _call_provider(system, prompt, REACT_SCHEMA,
+                                label="reaction", fallback_msg="skipping")
     if text is None:
         return None
 
@@ -454,5 +497,5 @@ if __name__ == "__main__":
         print("no verdict (declined or unreachable) - crowd vote this one")
     else:
         print(f"winner:  {result.winner}")
+        print(f"margin:  {result.margin}  ({result.points} pt)")
         print(f"verdict: {result.verdict}")
-        print(f"hype:    {result.hype}")
