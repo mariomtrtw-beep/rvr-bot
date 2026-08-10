@@ -3147,24 +3147,29 @@ async def _run_beef(ctx, a_member, b_member, persona: str) -> None:
             winner_pts, loser_pts = verdict.winner_points, verdict.loser_points
             winner = (a_member, b_member)[winner_idx]
             loser = (a_member, b_member)[1 - winner_idx]
-            embed = discord.Embed(
-                title=f"Exchange {exchange_no}: {winner.display_name} takes it "
-                      f"({verdict.margin}, +{winner_pts})",
-                description=verdict.verdict, color=0xffaa00)
+            # A true tie (loser_pts == winner_pts) isn't "X takes it" with an
+            # asterisk - both sides earned the same points this round, so the
+            # title has to say that up front instead of the usual winner
+            # framing plus a caption nobody reads at the bottom.
+            tied = loser_pts and loser_pts == winner_pts
+            if tied:
+                title = f"Exchange {exchange_no}: dead even ({verdict.margin}, +{winner_pts} each)"
+            else:
+                title = (f"Exchange {exchange_no}: {winner.display_name} takes it "
+                        f"({verdict.margin}, +{winner_pts})")
+            embed = discord.Embed(title=title, description=verdict.verdict, color=0xffaa00)
             embed.add_field(name=f"{a_member.display_name}", value=burn_a[:1000], inline=False)
             embed.add_field(name=f"{b_member.display_name}", value=burn_b[:1000], inline=False)
-            if loser_pts:
+            if tied:
+                embed.add_field(name="Result", value=f"Both landed - +{winner_pts} each",
+                               inline=False)
+            elif loser_pts:
                 # A wash between two good burns still needs the score to say
                 # so - otherwise "+1" for the loser looks like a typo instead
-                # of the point it's meant to be. A true tie (loser_pts ==
-                # winner_pts) is worth calling out differently from a flat
-                # +1 consolation - it's the loser matching the winner blow
-                # for blow, not just landing a lesser hit.
-                if loser_pts == winner_pts:
-                    embed.set_footer(text=f"dead even - {loser.display_name} matched that "
-                                          f"blow for blow (+{loser_pts})")
-                else:
-                    embed.set_footer(text=f"{loser.display_name}'s burn landed too (+{loser_pts})")
+                # of the point it's meant to be. A real field reads clearer
+                # than a footer, which is easy to miss entirely.
+                embed.add_field(name="Also landed", value=f"{loser.display_name} (+{loser_pts})",
+                               inline=False)
             await ctx.send(embed=embed)
         else:
             # No verdict from the judge - hand this exchange to the room
@@ -3186,8 +3191,19 @@ async def _run_beef(ctx, a_member, b_member, persona: str) -> None:
 
         if sudden_death:
             await ctx.send("⚡ **Sudden death — that settles it.**")
-            await _finish_beef(ctx, winner, loser, score[winner_idx] + winner_pts,
-                              score[loser_idx] + loser_pts)
+            final_winner_total = score[winner_idx] + winner_pts
+            final_loser_total = score[loser_idx] + loser_pts
+            # Same rule as normal play: whoever's total ends up higher wins
+            # the battle, even if that's the exchange "loser" catching up on
+            # a consolation/tied point - being on match point doesn't mean
+            # you're exempt from getting overtaken. Only fall back to the
+            # judge's nominal winner when the totals land exactly even
+            # (only possible on a "tied" call), since sudden death still has
+            # to guarantee a result, never a draw.
+            if final_winner_total >= final_loser_total:
+                await _finish_beef(ctx, winner, loser, final_winner_total, final_loser_total)
+            else:
+                await _finish_beef(ctx, loser, winner, final_loser_total, final_winner_total)
             return
 
         score[winner_idx] += winner_pts
