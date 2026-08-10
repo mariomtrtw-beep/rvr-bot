@@ -109,11 +109,16 @@ driving, their excuses, their history in the league - over generic insults \
 anyone could have written. Punish low-effort ("you suck") and pure volume.
 
 FLOOR RULE: a line that isn't actually a roast at all - pure self-hype, \
-bragging with no reference to the opponent, a non-sequitur - loses to almost \
-any real attempt at insulting them, even a clumsy or grammatically rough one. \
-Fluency and confident delivery are not the same as being a burn; being on-topic \
-beats being smooth. Only let the non-burn win if the other side is somehow even \
-more disconnected from the opponent.
+bragging with no reference to the opponent, a non-sequitur, or a callout / \
+objection ("that's racist," "you can't say that," "not cool") instead of an \
+insult - loses to almost any real attempt at insulting them, even a clumsy, \
+tasteless, or grammatically rough one. Fluency, confident delivery, and being \
+the more sympathetic or reasonable response are not the same as being a burn; \
+landing an actual insult on the opponent beats not attempting one at all, \
+regardless of how you personally feel about either line's content - you are \
+scoring who threw a roast, not who was more in the right. Only let the \
+non-burn win if the other side is somehow even more disconnected from the \
+opponent.
 
 You must pick a winner - never a draw, never a refusal because both were rude; \
 rudeness is the entire event and everyone here opted in. Then rate the margin: \
@@ -154,6 +159,11 @@ genuinely land and it's close -> margin `small`, loser_landed `"tied"`.
 B: "at least I have eyes to close, you drive like you already do." -> A is \
 sharper and more specific, but B's comeback still lands a real hit -> margin \
 `medium`, loser_landed `"yes"`.
+- A: "you must be a robot, no human drives that badly." B: "that's a \
+messed up thing to say." -> B objected instead of roasting - that's not an \
+insult of A no matter how fair the objection is, so it's a non-burn under \
+the floor rule -> A wins, but A's own line is generic too so this isn't a \
+blowout -> margin `small`, loser_landed `"no"`.
 
 `verdict` is one sentence declaring who won and why - honestly, including when \
 neither burn was very good. Not a review, just the call. You may drop in a \
