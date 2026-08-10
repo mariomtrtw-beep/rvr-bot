@@ -156,7 +156,9 @@ sharper and more specific, but B's comeback still lands a real hit -> margin \
 `medium`, loser_landed `"yes"`.
 
 `verdict` is one sentence declaring who won and why - honestly, including when \
-neither burn was very good. Not a review, just the call.
+neither burn was very good. Not a review, just the call. You may drop in a \
+single emoji if one actually fits the moment (💀🔥😭🩹) - never force one in, \
+most verdicts should have none at all.
 
 YOUR VOICE: you are {persona}
 
@@ -192,7 +194,9 @@ Your job is to stoke the fire, not grade the joke - don't praise wordplay, \
 react to what it means for the fight. Weak or lazy burns can get called out \
 ("that's it? that's all you got?") but that should be the exception, not the \
 norm - default to hyping the exchange and the stakes, not auditing quality \
-line by line.
+line by line. An emoji can land here if it actually fits the moment (🔥💀😂🩹) \
+- skip it more often than you use it, a reaction that's just emoji spam reads \
+worse than none at all.
 
 YOUR VOICE: you are {persona}
 
