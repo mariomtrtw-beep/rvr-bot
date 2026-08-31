@@ -256,20 +256,25 @@ async def on_message(message: discord.Message) -> None:
     regime_channel_id = channel_ids_doc.get("regime")
     if (state.get("active") and regime_channel_id and message.channel.id == regime_channel_id
             and not message.content.startswith("!")):
-        buf = _regime_history.setdefault(message.channel.id, deque(maxlen=REGIME_CONTEXT_SIZE))
-        history = list(buf)
-        stage = state.get("stage", 1)
-        # Every message is kept as context regardless of whether it triggers
-        # a reply - the bit still "sees" everything, it just only speaks up
-        # for what actually crosses a line.
-        buf.append((message.author.display_name, message.content))
-        if await regime_ai.should_respond(message.content):
-            async with message.channel.typing():
-                reply = await regime_ai.chat_reply(stage, history, message.author.display_name,
-                                                   message.content)
-            if reply:
-                await message.channel.send(reply)
-                buf.append(("The Regime", reply))
+        # Serialised per channel - several messages landing close together
+        # queue up here one at a time instead of each firing its own
+        # concurrent (and, on a rate-limited key, slow-and-retrying) call.
+        lock = _regime_locks.setdefault(message.channel.id, asyncio.Lock())
+        async with lock:
+            buf = _regime_history.setdefault(message.channel.id, deque(maxlen=REGIME_CONTEXT_SIZE))
+            history = list(buf)
+            stage = state.get("stage", 1)
+            # Every message is kept as context regardless of whether it triggers
+            # a reply - the bit still "sees" everything, it just only speaks up
+            # for what actually crosses a line.
+            buf.append((message.author.display_name, message.content))
+            if await regime_ai.should_respond(message.content):
+                async with message.channel.typing():
+                    reply = await regime_ai.chat_reply(stage, history, message.author.display_name,
+                                                       message.content)
+                if reply:
+                    await message.channel.send(reply)
+                    buf.append(("The Regime", reply))
 
     await bot.process_commands(message)
 
@@ -1114,6 +1119,13 @@ REGIME_TIMEOUT_CAP  = 60    # minutes - a bit, not a real long-term punishment t
 # for a bit; nothing about who's active/what stage is lost, since that lives
 # in Mongo below.
 _regime_history: dict[int, deque] = {}
+
+# One call in flight per channel at a time. Without this, several messages
+# landing close together each fire their own should_respond/chat_reply calls
+# concurrently - on a rate-limited free-tier key that means a pile of slow,
+# independently-retrying calls that all land around the same time instead of
+# one at a time, which is what actually happened during testing.
+_regime_locks: dict[int, asyncio.Lock] = {}
 
 
 async def _regime_state() -> dict:

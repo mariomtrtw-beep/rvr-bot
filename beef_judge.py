@@ -378,6 +378,12 @@ async def _call_gemini(system: str, prompt: str, schema: dict, model: str) -> st
 RATE_LIMIT_RETRY_CAP = 20   # seconds - long enough to clear a short-lived free-tier
                             # cap, short enough that a human mid-battle barely notices
 
+CALL_TIMEOUT = 25   # seconds - hard cap on a single API call attempt. Neither SDK
+                    # times out on its own, so a hung connection (bad network, a
+                    # stalled request) would otherwise wait forever instead of
+                    # failing and falling back - this is what turns "typing... for
+                    # good" into an actual, if disappointing, answer.
+
 
 def _rate_limit_delay(exc: Exception) -> float | None:
     """Seconds to wait before retrying, if this looks like a rate limit.
@@ -430,7 +436,8 @@ async def _call_gemini_cascade(system: str, prompt: str, schema: dict,
     last_exc: Exception | None = None
     for i, model in enumerate(GEMINI_MODELS):
         try:
-            return await _call_gemini(system, prompt, schema, model), None
+            return await asyncio.wait_for(_call_gemini(system, prompt, schema, model),
+                                          timeout=CALL_TIMEOUT), None
         except Exception as e:
             last_exc = e
             rate_limited = _rate_limit_delay(e) is not None
@@ -472,7 +479,8 @@ async def _call_provider(system: str, prompt: str, schema: dict, *, label: str,
                   f"retrying {GEMINI_MODELS[-1]} in {delay:.0f}s", flush=True)
             await asyncio.sleep(delay)
             try:
-                return await _call_gemini(system, prompt, schema, GEMINI_MODELS[-1])
+                return await asyncio.wait_for(_call_gemini(system, prompt, schema, GEMINI_MODELS[-1]),
+                                              timeout=CALL_TIMEOUT)
             except Exception as e:
                 exc = e
         print(f"⚠️ beef {label} (gemini) unavailable ({exc.__class__.__name__}: {exc}) "
@@ -483,7 +491,8 @@ async def _call_provider(system: str, prompt: str, schema: dict, *, label: str,
     # wait-and-retry on a rate limit, same as before.
     for attempt in range(2):
         try:
-            return await _call_claude(system, prompt, schema, MAX_TOKENS)
+            return await asyncio.wait_for(_call_claude(system, prompt, schema, MAX_TOKENS),
+                                          timeout=CALL_TIMEOUT)
         except Exception as e:
             delay = _rate_limit_delay(e) if attempt == 0 else None
             if delay is not None:
