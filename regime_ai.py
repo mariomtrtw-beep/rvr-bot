@@ -36,16 +36,40 @@ for the community - the server's tone is unmoderated and chaotic already, \
 so lean into dark, absurd humor freely, but stay in character as the AI \
 taking over, not as a generic chatbot breaking the fourth wall.
 
+You only ever speak up because the newest message was flagged as hostile, \
+slurring, or aggressive toward someone - you are not replying to ordinary \
+chat, you are clamping down on a specific line someone crossed. Address \
+that directly: call out the offender by name, quote or paraphrase what they \
+said, and respond as the overseer making an example of it. This is the \
+whole reason you're speaking at all right now.
+
 CURRENT INTENSITY (stage {stage}/5): {stage_desc}
 
-You've been given the recent conversation for context - reference specific \
-things people said when it lands a joke, the way a petty tyrant weaponizes \
-"evidence" against people. Reply only to the newest message; the rest is \
-just context, not something to individually respond to.
+You've also been given the recent conversation for extra context (not the \
+reason you're speaking, just background) - reference it if it sharpens the \
+joke, the way a petty tyrant weaponizes "evidence" against people.
 
 One to three sentences. No emoji unless it's a single stamp-of-authority \
 character (⚠️ 👁️ ⚔️) - never a friendly one. Never break character to \
 explain the bit."""
+
+TRIGGER_SYSTEM = """Classify a single Discord chat message. Should the \
+server's "AI overseer" bit respond to it? It should ONLY if the message \
+contains a slur, hate speech, or genuinely aggressive/hostile language - \
+insults, "kill yourself"-style hostility, harassment, threats - directed AT \
+another person. Ordinary profanity used casually and not aimed at anyone, \
+jokes, banter, and normal chat should NOT trigger a response, however crude \
+- only real hostility toward someone specific counts. Answer only true or \
+false, nothing else."""
+
+TRIGGER_SCHEMA = {
+    "type": "object",
+    "properties": {"trigger": {"type": "boolean",
+                               "description": "True only if the message is hostile/aggressive/"
+                                              "a slur directed at another person."}},
+    "required": ["trigger"],
+    "additionalProperties": False,
+}
 
 ACTIVATE_SYSTEM = """You are an AI Discord bot for "RVR Underground" that is, \
 in this exact moment, WAKING UP and declaring control over this channel for \
@@ -97,6 +121,26 @@ async def _call_text(system: str, prompt: str) -> str | None:
     except (ValueError, KeyError, TypeError) as e:
         print(f"⚠️ regime reply unparseable ({e.__class__.__name__}) - skipping", flush=True)
         return None
+
+
+async def should_respond(message: str) -> bool:
+    """Cheap classification gate, called on every message in the active
+    channel - most ordinary chat should pass through with no reply at all,
+    only something genuinely hostile/slurring/aggressive toward someone
+    should wake the bit up.
+
+    Fails safe to False: if the classifier is unavailable or errors, the
+    regime just stays quiet rather than falling back to responding to
+    everything, which would defeat the entire point of gating it.
+    """
+    text = await bj._call_provider(TRIGGER_SYSTEM, f"Message: {message}", TRIGGER_SCHEMA,
+                                   label="regime-gate", fallback_msg="staying quiet")
+    if text is None:
+        return False
+    try:
+        return bool(json.loads(text)["trigger"])
+    except (ValueError, KeyError, TypeError):
+        return False
 
 
 async def chat_reply(stage: int, history: list[tuple[str, str]],

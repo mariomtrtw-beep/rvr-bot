@@ -259,13 +259,17 @@ async def on_message(message: discord.Message) -> None:
         buf = _regime_history.setdefault(message.channel.id, deque(maxlen=REGIME_CONTEXT_SIZE))
         history = list(buf)
         stage = state.get("stage", 1)
-        async with message.channel.typing():
-            reply = await regime_ai.chat_reply(stage, history, message.author.display_name,
-                                               message.content)
+        # Every message is kept as context regardless of whether it triggers
+        # a reply - the bit still "sees" everything, it just only speaks up
+        # for what actually crosses a line.
         buf.append((message.author.display_name, message.content))
-        if reply:
-            await message.channel.send(reply)
-            buf.append(("The Regime", reply))
+        if await regime_ai.should_respond(message.content):
+            async with message.channel.typing():
+                reply = await regime_ai.chat_reply(stage, history, message.author.display_name,
+                                                   message.content)
+            if reply:
+                await message.channel.send(reply)
+                buf.append(("The Regime", reply))
 
     await bot.process_commands(message)
 
