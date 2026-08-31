@@ -42,33 +42,36 @@ for the community - the server's tone is unmoderated and chaotic already, \
 so lean into dark humor freely, but stay in character as the AI taking \
 over, not as a generic chatbot breaking the fourth wall.
 
-You only ever speak up because the newest message was flagged as hostile, \
-slurring, or aggressive toward someone - you are not replying to ordinary \
-chat, you are clamping down on a specific line someone crossed. Name the \
-offender, react to what they said, nothing more.
+First decide: does the newest message contain a slur, hate speech, or \
+genuinely aggressive/hostile language - insults, "kill yourself"-style \
+hostility, harassment, threats - directed AT another person? Ordinary \
+profanity used casually and not aimed at anyone, jokes, banter, and normal \
+chat do NOT count, however crude - only real hostility toward someone \
+specific does. Set `trigger` to that answer.
+
+If `trigger` is true, also write `reply`: an in-character response naming \
+the offender and reacting to what they said - clamping down on the line \
+they crossed, which is the only reason you'd be speaking right now. If \
+`trigger` is false, leave `reply` as an empty string; do not reply to \
+ordinary chat.
 
 CURRENT INTENSITY (stage {stage}/5): {stage_desc}
 
 {style}
 
-No emoji unless it's a single stamp-of-authority character (⚠️ 👁️ ⚔️) - \
-never a friendly one. Never break character to explain the bit."""
+If replying: no emoji unless it's a single stamp-of-authority character \
+(⚠️ 👁️ ⚔️) - never a friendly one. Never break character to explain the bit."""
 
-TRIGGER_SYSTEM = """Classify a single Discord chat message. Should the \
-server's "AI overseer" bit respond to it? It should ONLY if the message \
-contains a slur, hate speech, or genuinely aggressive/hostile language - \
-insults, "kill yourself"-style hostility, harassment, threats - directed AT \
-another person. Ordinary profanity used casually and not aimed at anyone, \
-jokes, banter, and normal chat should NOT trigger a response, however crude \
-- only real hostility toward someone specific counts. Answer only true or \
-false, nothing else."""
-
-TRIGGER_SCHEMA = {
+CHAT_SCHEMA = {
     "type": "object",
-    "properties": {"trigger": {"type": "boolean",
-                               "description": "True only if the message is hostile/aggressive/"
-                                              "a slur directed at another person."}},
-    "required": ["trigger"],
+    "properties": {
+        "trigger": {"type": "boolean",
+                   "description": "True only if the newest message is hostile/aggressive/"
+                                  "a slur directed at another person."},
+        "reply": {"type": "string",
+                 "description": "In-character reply if trigger is true; empty string otherwise."},
+    },
+    "required": ["trigger", "reply"],
     "additionalProperties": False,
 }
 
@@ -127,33 +130,32 @@ async def _call_text(system: str, prompt: str) -> str | None:
         return None
 
 
-async def should_respond(message: str) -> bool:
-    """Cheap classification gate, called on every message in the active
-    channel - most ordinary chat should pass through with no reply at all,
-    only something genuinely hostile/slurring/aggressive toward someone
-    should wake the bit up.
+async def maybe_reply(stage: int, history: list[tuple[str, str]],
+                      author: str, message: str) -> str | None:
+    """One call that both decides whether to respond and, if so, writes the
+    reply - a single round trip instead of a separate classify-then-generate
+    pair. The two-call version doubled real-world latency for any message
+    that actually triggered a reply (up to CALL_TIMEOUT each, sequentially),
+    which was making triggered replies land so late it looked like the bit
+    had stopped responding entirely.
 
-    Fails safe to False: if the classifier is unavailable or errors, the
-    regime just stays quiet rather than falling back to responding to
-    everything, which would defeat the entire point of gating it.
+    Returns None both when nothing was worth responding to AND when the
+    call fails - the caller can't tell those apart, which is fine, since
+    both mean "say nothing here."
     """
-    text = await bj._call_provider(TRIGGER_SYSTEM, f"Message: {message}", TRIGGER_SCHEMA,
-                                   label="regime-gate", fallback_msg="staying quiet")
-    if text is None:
-        return False
-    try:
-        return bool(json.loads(text)["trigger"])
-    except (ValueError, KeyError, TypeError):
-        return False
-
-
-async def chat_reply(stage: int, history: list[tuple[str, str]],
-                     author: str, message: str) -> str | None:
-    """One in-character reply to the newest message, informed by recent history."""
     system = CHAT_SYSTEM.format(stage=stage, stage_desc=_stage_desc(stage), style=STYLE)
     prompt = (f"Recent conversation:\n{_format_history(history)}\n\n"
              f"Newest message - {author}: {message}")
-    return await _call_text(system, prompt)
+    text = await bj._call_provider(system, prompt, CHAT_SCHEMA,
+                                   label="regime", fallback_msg="staying quiet")
+    if text is None:
+        return None
+    try:
+        data = json.loads(text)
+        return data["reply"] if data.get("trigger") and data.get("reply") else None
+    except (ValueError, KeyError, TypeError) as e:
+        print(f"⚠️ regime reply unparseable ({e.__class__.__name__}) - staying quiet", flush=True)
+        return None
 
 
 async def activation_announcement(stage: int, history: list[tuple[str, str]]) -> str | None:

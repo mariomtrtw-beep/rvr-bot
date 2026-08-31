@@ -268,13 +268,15 @@ async def on_message(message: discord.Message) -> None:
             # a reply - the bit still "sees" everything, it just only speaks up
             # for what actually crosses a line.
             buf.append((message.author.display_name, message.content))
-            if await regime_ai.should_respond(message.content):
-                async with message.channel.typing():
-                    reply = await regime_ai.chat_reply(stage, history, message.author.display_name,
-                                                       message.content)
-                if reply:
-                    await message.channel.send(reply)
-                    buf.append(("The Regime", reply))
+            # One call decides whether to respond AND writes the reply if so -
+            # a separate classify-then-generate pair used to double the wait
+            # for anything that actually triggered a reply.
+            async with message.channel.typing():
+                reply = await regime_ai.maybe_reply(stage, history, message.author.display_name,
+                                                    message.content)
+            if reply:
+                await message.channel.send(reply)
+                buf.append(("The Regime", reply))
 
     await bot.process_commands(message)
 
