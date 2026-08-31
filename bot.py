@@ -1119,6 +1119,24 @@ async def channels_cmd(ctx):
     await ctx.send(embed=embed)
 
 
+@bot.command(name="say")
+@admin_or_dev()
+async def say_cmd(ctx, channel: discord.TextChannel, *, message: str):
+    """!say #channel <message> — posts as the bot, not as you.
+
+    Deletes your own command message afterward when possible, so the post
+    reads as coming from the bot rather than leaving a visible "!say ..."
+    right above it.
+    """
+    await channel.send(message)
+    try:
+        await ctx.message.delete()
+    except discord.Forbidden:
+        pass                      # no permission to delete - the post still went out fine
+    if channel.id != ctx.channel.id:
+        await ctx.send(f"✅ Sent to {channel.mention}.", delete_after=5)
+
+
 # ── Race results ──────────────────────────────────────────────────────────────
 SESSION_ID_RE = re.compile(r"([0-9a-f]{32})")
 
@@ -3413,6 +3431,7 @@ async def rvr_help(ctx):
     embed.add_field(name="!personas",             value="Who can commentate a beef battle", inline=False)
     embed.add_field(name="!beefboard",            value="Roast battle standings", inline=False)
     embed.add_field(name="── Admin only ──",      value="\u200b", inline=False)
+    embed.add_field(name="!say #channel <message>", value="Post a message as the bot", inline=False)
     embed.add_field(name="!setchannel <role> #chan", value="Set the leaderboard / times / activity / commands channel", inline=False)
     embed.add_field(name="!channels",                    value="Show which channel is used for what", inline=False)
     embed.add_field(name="!refresh", value="Post every track board and the standings again", inline=False)
