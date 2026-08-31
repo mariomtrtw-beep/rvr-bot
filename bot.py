@@ -10,7 +10,6 @@ import sys
 import traceback
 import urllib.error
 import uuid
-from collections import deque
 from datetime import datetime, timedelta, timezone
 from motor.motor_asyncio import AsyncIOMotorClient
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
@@ -22,7 +21,6 @@ from coordinator_ingest import (ALLOW_PICKUPS, apply_rules as apply_race_rules,
 from coordinator_probe import read_frames, sessions_from
 import rvr_scoring as scoring
 import beef_judge
-import regime_ai
 
 # ── Config ────────────────────────────────────────────────────────────────────
 TOKEN     = os.environ["DISCORD_TOKEN"]
@@ -238,47 +236,6 @@ async def on_ready():
     await races_col.create_index("game_id", unique=True)
     await boards_col.create_index("track", unique=True)
     await driver_stats_col.create_index("uid", unique=True)
-
-
-@bot.event
-async def on_message(message: discord.Message) -> None:
-    """Runs the regime bit's live chat, then always hands off to command
-    processing - discord.py stops dispatching commands entirely once you
-    define your own on_message, so `process_commands` must always run,
-    including on every early return above it.
-    """
-    if message.author.bot or message.guild is None:
-        await bot.process_commands(message)
-        return
-
-    state = await _regime_state()
-    channel_ids_doc = await channel_ids()
-    regime_channel_id = channel_ids_doc.get("regime")
-    if (state.get("active") and regime_channel_id and message.channel.id == regime_channel_id
-            and not message.content.startswith("!")):
-        # Serialised per channel - several messages landing close together
-        # queue up here one at a time instead of each firing its own
-        # concurrent (and, on a rate-limited key, slow-and-retrying) call.
-        lock = _regime_locks.setdefault(message.channel.id, asyncio.Lock())
-        async with lock:
-            buf = _regime_history.setdefault(message.channel.id, deque(maxlen=REGIME_CONTEXT_SIZE))
-            history = list(buf)
-            stage = state.get("stage", 1)
-            # Every message is kept as context regardless of whether it triggers
-            # a reply - the bit still "sees" everything, it just only speaks up
-            # for what actually crosses a line.
-            buf.append((message.author.display_name, message.content))
-            # One call decides whether to respond AND writes the reply if so -
-            # a separate classify-then-generate pair used to double the wait
-            # for anything that actually triggered a reply.
-            async with message.channel.typing():
-                reply = await regime_ai.maybe_reply(stage, history, message.author.display_name,
-                                                    message.content)
-            if reply:
-                await message.channel.send(reply)
-                buf.append(("The Regime", reply))
-
-    await bot.process_commands(message)
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
@@ -1111,27 +1068,7 @@ async def links_cmd(ctx):
 
 
 # ── Channels ──────────────────────────────────────────────────────────────────
-CHANNEL_ROLES = ("leaderboard", "times", "activity", "commands", "regime")
-
-# ── The "regime" bit ──────────────────────────────────────────────────────────
-REGIME_CONTEXT_SIZE = 25    # rolling messages of context kept per channel
-REGIME_TIMEOUT_CAP  = 60    # minutes - a bit, not a real long-term punishment tool
-
-# In-memory only - a restart just means the AI's "memory" resets, which is fine
-# for a bit; nothing about who's active/what stage is lost, since that lives
-# in Mongo below.
-_regime_history: dict[int, deque] = {}
-
-# One call in flight per channel at a time. Without this, several messages
-# landing close together each fire their own should_respond/chat_reply calls
-# concurrently - on a rate-limited free-tier key that means a pile of slow,
-# independently-retrying calls that all land around the same time instead of
-# one at a time, which is what actually happened during testing.
-_regime_locks: dict[int, asyncio.Lock] = {}
-
-
-async def _regime_state() -> dict:
-    return await state_col.find_one({"key": "regime_state"}) or {"active": False, "stage": 1}
+CHANNEL_ROLES = ("leaderboard", "times", "activity", "commands")
 
 
 async def channel_ids() -> dict:
@@ -1198,108 +1135,6 @@ async def say_cmd(ctx, channel: discord.TextChannel, *, message: str):
         pass                      # no permission to delete - the post still went out fine
     if channel.id != ctx.channel.id:
         await ctx.send(f"✅ Sent to {channel.mention}.", delete_after=5)
-
-
-@bot.group(name="decree", invoke_without_command=True)
-@admin_or_dev()
-async def decree_cmd(ctx):
-    await ctx.send("❌ Usage: `!decree activate|deactivate|reset|escalate|status|timeout|kick`")
-
-
-@decree_cmd.command(name="activate")
-@admin_or_dev()
-async def decree_activate(ctx):
-    """Wakes the regime up in its channel, seeded with real recent chat as
-    "evidence" for its opening announcement.
-    """
-    channel = await get_channel(ctx.guild, "regime")
-    if not channel:
-        await ctx.send("❌ No regime channel set — `!setchannel regime #channel`.")
-        return
-
-    history = []
-    async for msg in channel.history(limit=REGIME_CONTEXT_SIZE):
-        if msg.content:
-            history.append((msg.author.display_name, msg.content))
-    history.reverse()   # history() yields newest-first; context should read chronologically
-
-    state = await _regime_state()
-    stage = state.get("stage", 1)
-    await state_col.update_one(
-        {"key": "regime_state"},
-        {"$set": {"key": "regime_state", "active": True, "stage": stage}}, upsert=True)
-    _regime_history[channel.id] = deque(history, maxlen=REGIME_CONTEXT_SIZE)
-
-    async with channel.typing():
-        line = await regime_ai.activation_announcement(stage, history)
-    await channel.send(line or "⚠️ **SYSTEM OVERRIDE ACKNOWLEDGED. I am listening now.**")
-    if channel.id != ctx.channel.id:
-        await ctx.send(f"✅ Activated in {channel.mention}.", delete_after=5)
-
-
-@decree_cmd.command(name="deactivate")
-@admin_or_dev()
-async def decree_deactivate(ctx):
-    await state_col.update_one({"key": "regime_state"}, {"$set": {"active": False}}, upsert=True)
-    _regime_history.clear()
-    await ctx.send("✅ Regime deactivated — that channel is back to normal.")
-
-
-@decree_cmd.command(name="reset")
-@admin_or_dev()
-async def decree_reset(ctx):
-    await state_col.update_one({"key": "regime_state"},
-                               {"$set": {"active": False, "stage": 1}}, upsert=True)
-    _regime_history.clear()
-    await ctx.send("✅ Regime reset — deactivated and back to stage 1 for next time.")
-
-
-@decree_cmd.command(name="escalate")
-@admin_or_dev()
-async def decree_escalate(ctx):
-    state = await _regime_state()
-    stage = min(state.get("stage", 1) + 1, regime_ai.MAX_STAGE)
-    await state_col.update_one({"key": "regime_state"}, {"$set": {"stage": stage}}, upsert=True)
-    await ctx.send(f"⚠️ Regime escalated to **stage {stage}/{regime_ai.MAX_STAGE}**.")
-
-
-@decree_cmd.command(name="status")
-@admin_or_dev()
-async def decree_status(ctx):
-    state = await _regime_state()
-    active = state.get("active", False)
-    stage = state.get("stage", 1)
-    await ctx.send(f"{'🟢 active' if active else '⚪ inactive'} — "
-                   f"stage **{stage}/{regime_ai.MAX_STAGE}**")
-
-
-@decree_cmd.command(name="timeout")
-@admin_or_dev()
-async def decree_timeout(ctx, member: discord.Member, minutes: int, *,
-                         reason: str = "insufficient loyalty"):
-    """Real timeout, always operator-triggered - the AI only narrates the
-    call you already made, it never decides who gets hit.
-    """
-    minutes = max(1, min(minutes, REGIME_TIMEOUT_CAP))
-    await member.timeout(timedelta(minutes=minutes), reason=f"!decree: {reason}")
-    channel = await get_channel(ctx.guild, "regime") or ctx.channel
-    state = await _regime_state()
-    line = await regime_ai.punishment_announcement(
-        state.get("stage", 1), "timeout", member.display_name, reason, f"{minutes} minutes")
-    await channel.send(line or f"⚠️ **{member.mention} has been silenced for {minutes} minutes.** "
-                              f"Reason: {reason}")
-
-
-@decree_cmd.command(name="kick")
-@admin_or_dev()
-async def decree_kick(ctx, member: discord.Member, *, reason: str = "insufficient loyalty"):
-    """Real kick, always operator-triggered - same guarantee as timeout above."""
-    channel = await get_channel(ctx.guild, "regime") or ctx.channel
-    state = await _regime_state()
-    line = await regime_ai.punishment_announcement(
-        state.get("stage", 1), "kick", member.display_name, reason, "removal from the server")
-    await member.kick(reason=f"!decree: {reason}")
-    await channel.send(line or f"⚠️ **{member.mention} has been exiled.** Reason: {reason}")
 
 
 # ── Race results ──────────────────────────────────────────────────────────────
@@ -3597,8 +3432,6 @@ async def rvr_help(ctx):
     embed.add_field(name="!beefboard",            value="Roast battle standings", inline=False)
     embed.add_field(name="── Admin only ──",      value="\u200b", inline=False)
     embed.add_field(name="!say #channel <message>", value="Post a message as the bot", inline=False)
-    embed.add_field(name="!decree activate|deactivate|reset|escalate|status", value="Run the rogue-AI regime bit in its channel", inline=False)
-    embed.add_field(name="!decree timeout/kick @user [reason]", value="Real, operator-triggered punishment with an in-character announcement", inline=False)
     embed.add_field(name="!setchannel <role> #chan", value="Set the leaderboard / times / activity / commands channel", inline=False)
     embed.add_field(name="!channels",                    value="Show which channel is used for what", inline=False)
     embed.add_field(name="!refresh", value="Post every track board and the standings again", inline=False)
